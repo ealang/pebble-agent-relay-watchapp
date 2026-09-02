@@ -58,15 +58,10 @@ function loadSettings() {
       return { url: '', headers: {} };
     }
     var parsed = JSON.parse(stored);
-    var loaded = {
+    return {
       url: normalizeText(parsed.url),
       headers: normalizeHeaders(parsed.headers)
     };
-    // Migrate the pre-headers schema, which stored a bare bearer token.
-    if (parsed.token && !Object.keys(loaded.headers).length) {
-      loaded.headers.Authorization = 'Bearer ' + normalizeText(parsed.token);
-    }
-    return loaded;
   } catch (err) {
     console.log('Failed to read settings: ' + err.message);
     return { url: '', headers: {} };

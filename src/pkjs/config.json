@@ -26,54 +26,78 @@
     "items": [
       {
         "type": "heading",
-        "defaultValue": "Headers",
-        "size": 4
-      },
-      {
-        "type": "text",
-        "defaultValue": "Sent with every request. Use these for authorization, e.g. name \"Authorization\", value \"Bearer <token>\"."
+        "defaultValue": "Header 1",
+        "size": 5
       },
       {
         "type": "input",
         "messageKey": "HEADER1_NAME",
-        "label": "Header 1 Name",
-        "attributes": { "placeholder": "Authorization" }
+        "attributes": { "placeholder": "Name (e.g. Authorization)" }
       },
       {
         "type": "input",
         "messageKey": "HEADER1_VALUE",
-        "label": "Header 1 Value",
-        "attributes": { "placeholder": "Bearer ..." }
+        "attributes": { "placeholder": "Value (e.g. Bearer <token>)" }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Header 2",
+        "size": 5
       },
       {
         "type": "input",
         "messageKey": "HEADER2_NAME",
-        "label": "Header 2 Name"
+        "attributes": { "placeholder": "Name" }
       },
       {
         "type": "input",
         "messageKey": "HEADER2_VALUE",
-        "label": "Header 2 Value"
+        "attributes": { "placeholder": "Value" }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Header 3",
+        "size": 5
       },
       {
         "type": "input",
         "messageKey": "HEADER3_NAME",
-        "label": "Header 3 Name"
+        "attributes": { "placeholder": "Name" }
       },
       {
         "type": "input",
         "messageKey": "HEADER3_VALUE",
-        "label": "Header 3 Value"
+        "attributes": { "placeholder": "Value" }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Header 4",
+        "size": 5
       },
       {
         "type": "input",
         "messageKey": "HEADER4_NAME",
-        "label": "Header 4 Name"
+        "attributes": { "placeholder": "Name" }
       },
       {
         "type": "input",
         "messageKey": "HEADER4_VALUE",
-        "label": "Header 4 Value"
+        "attributes": { "placeholder": "Value" }
       }
     ]
   },
