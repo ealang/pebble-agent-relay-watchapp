@@ -1,0 +1,84 @@
+[
+  {
+    "type": "heading",
+    "defaultValue": "Voice Hook",
+    "size": 3
+  },
+  {
+    "type": "text",
+    "defaultValue": "Dictates a message and posts it to a webhook as multipart/form-data."
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "input",
+        "messageKey": "WEBHOOK_URL",
+        "label": "Webhook URL",
+        "attributes": {
+          "placeholder": "https://example.com/webhook"
+        }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Headers",
+        "size": 4
+      },
+      {
+        "type": "text",
+        "defaultValue": "Sent with every request. Use these for authorization, e.g. name \"Authorization\", value \"Bearer <token>\"."
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER1_NAME",
+        "label": "Header 1 Name",
+        "attributes": { "placeholder": "Authorization" }
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER1_VALUE",
+        "label": "Header 1 Value",
+        "attributes": { "placeholder": "Bearer ..." }
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER2_NAME",
+        "label": "Header 2 Name"
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER2_VALUE",
+        "label": "Header 2 Value"
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER3_NAME",
+        "label": "Header 3 Name"
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER3_VALUE",
+        "label": "Header 3 Value"
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER4_NAME",
+        "label": "Header 4 Name"
+      },
+      {
+        "type": "input",
+        "messageKey": "HEADER4_VALUE",
+        "label": "Header 4 Value"
+      }
+    ]
+  },
+  {
+    "type": "submit",
+    "defaultValue": "Save"
+  }
+]

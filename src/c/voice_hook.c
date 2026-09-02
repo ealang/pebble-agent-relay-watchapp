@@ -1,0 +1,132 @@
+#include <pebble.h>
+
+#define TRANSCRIPT_MAX 512
+#define STATUS_MAX 64
+
+static Window *s_window;
+static TextLayer *s_status_layer;
+static char s_status_text[STATUS_MAX];
+static char s_transcript[TRANSCRIPT_MAX];
+
+#if defined(PBL_MICROPHONE)
+static DictationSession *s_dictation;
+#endif
+
+static void prv_set_status(const char *text) {
+  strncpy(s_status_text, text, STATUS_MAX - 1);
+  s_status_text[STATUS_MAX - 1] = '\0';
+  text_layer_set_text(s_status_layer, s_status_text);
+}
+
+static void prv_exit_soon_callback(void *context) {
+  window_stack_pop_all(false);
+}
+
+static void prv_exit_soon(void) {
+  app_timer_register(2000, prv_exit_soon_callback, NULL);
+}
+
+static void prv_send_transcript(void) {
+  DictionaryIterator *out;
+  AppMessageResult result = app_message_outbox_begin(&out);
+  if (result != APP_MSG_OK) {
+    prv_set_status("Phone unreachable");
+    prv_exit_soon();
+    return;
+  }
+
+  dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript);
+  if (app_message_outbox_send() != APP_MSG_OK) {
+    prv_set_status("Phone unreachable");
+    prv_exit_soon();
+    return;
+  }
+
+  prv_set_status("Sending...");
+}
+
+#if defined(PBL_MICROPHONE)
+static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
+                                   char *transcription, void *context) {
+  if (status != DictationSessionStatusSuccess) {
+    // The system already showed its own error dialog for this.
+    window_stack_pop_all(false);
+    return;
+  }
+
+  strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
+  s_transcript[TRANSCRIPT_MAX - 1] = '\0';
+  prv_send_transcript();
+}
+#endif
+
+static void prv_inbox_received(DictionaryIterator *iter, void *context) {
+  Tuple *response = dict_find(iter, MESSAGE_KEY_RESPONSE);
+  if (response) {
+    prv_set_status(response->value->cstring);
+    prv_exit_soon();
+  }
+}
+
+static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  prv_set_status("Send failed");
+  prv_exit_soon();
+}
+
+static void prv_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+
+  s_status_layer = text_layer_create(GRect(4, bounds.size.h / 2 - 24, bounds.size.w - 8, 48));
+  text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_background_color(s_status_layer, GColorClear);
+  layer_add_child(root, text_layer_get_layer(s_status_layer));
+
+  prv_set_status("Listening...");
+}
+
+static void prv_window_unload(Window *window) {
+  text_layer_destroy(s_status_layer);
+}
+
+static void prv_init(void) {
+  s_window = window_create();
+  window_set_window_handlers(s_window, (WindowHandlers){
+    .load = prv_window_load,
+    .unload = prv_window_unload,
+  });
+  window_stack_push(s_window, true);
+
+  app_message_register_inbox_received(prv_inbox_received);
+  app_message_register_outbox_failed(prv_outbox_failed);
+  app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
+
+#if defined(PBL_MICROPHONE)
+  s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
+  if (s_dictation) {
+    dictation_session_start(s_dictation);
+  } else {
+    prv_set_status("No microphone");
+    prv_exit_soon();
+  }
+#else
+  prv_set_status("No microphone");
+  prv_exit_soon();
+#endif
+}
+
+static void prv_deinit(void) {
+#if defined(PBL_MICROPHONE)
+  if (s_dictation) {
+    dictation_session_destroy(s_dictation);
+  }
+#endif
+  window_destroy(s_window);
+}
+
+int main(void) {
+  prv_init();
+  app_event_loop();
+  prv_deinit();
+}

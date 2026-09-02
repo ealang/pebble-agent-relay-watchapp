@@ -1,0 +1,49 @@
+{
+  "name": "voicehook",
+  "author": "deltaloop",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {
+    "@rebble/clay": "^1.0.8"
+  },
+  "pebble": {
+    "displayName": "Voice Hook",
+    "uuid": "c0b48501-a0da-4fbb-9013-a4ea68dc6165",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "TRANSCRIPT",
+      "STATUS",
+      "RESPONSE",
+      "WEBHOOK_URL",
+      "HEADER1_NAME",
+      "HEADER1_VALUE",
+      "HEADER2_NAME",
+      "HEADER2_VALUE",
+      "HEADER3_NAME",
+      "HEADER3_VALUE",
+      "HEADER4_NAME",
+      "HEADER4_VALUE"
+    ],
+    "resources": {
+      "media": []
+    },
+    "capabilities": [
+      "configurable"
+    ]
+  }
+}
