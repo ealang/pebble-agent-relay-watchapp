@@ -6,7 +6,7 @@
   },
   {
     "type": "text",
-    "defaultValue": "Dictates a message and posts it to a webhook as multipart/form-data."
+    "defaultValue": "Dictates a message and posts it to a webhook."
   },
   {
     "type": "section",
