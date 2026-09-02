@@ -30,12 +30,6 @@ In the phone app, open the watchapp's settings page:
 
 Settings are stored on the phone. Nothing is hardcoded in the app.
 
-## Why text only
-
-Third-party Pebble watchapps cannot access the microphone directly — the
-dictation API is the only sanctioned voice input, and it returns text. That
-keeps this app small: the platform does the hard part.
-
 ## Building
 
 Requires the [Pebble SDK](https://developer.repebble.com/sdk/):
