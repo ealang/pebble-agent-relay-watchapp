@@ -1,11 +1,14 @@
 {
   "name": "voicehook",
   "author": "deltaloop",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "keywords": [
     "pebble-app"
   ],
   "private": true,
+  "dependencies": {
+    "@rebble/clay": "^1.0.8"
+  },
   "pebble": {
     "displayName": "Voice Hook",
     "uuid": "c0b48501-a0da-4fbb-9013-a4ea68dc6165",
@@ -22,7 +25,8 @@
       "watchface": false
     },
     "messageKeys": [
-      "TRANSCRIPT"
+      "TRANSCRIPT",
+      "REVIEW_DELAY"
     ],
     "companionApp": {
       "android": {
@@ -36,6 +40,10 @@
     },
     "resources": {
       "media": []
-    }
+    },
+    "enableMultiJS": true,
+    "capabilities": [
+      "configurable"
+    ]
   }
 }

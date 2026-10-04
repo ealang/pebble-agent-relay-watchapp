@@ -7,7 +7,8 @@ its Android companion app. Open the app, speak, done.
 
 1. On launch, a dictation session starts immediately.
 2. The transcript appears on a review screen, in quotes, with a bar along
-   the bottom counting down two seconds. Do nothing and it sends on its own.
+   the bottom counting down (two seconds by default). Do nothing and it
+   sends on its own.
 3. The transcript is sent to the phone via AppMessage (key `TRANSCRIPT`).
 4. The Pebble phone app routes the message to the declared companion app,
    [pebble-telegram-webhook](https://github.com/ealang/pebble-telegram-webhook)
@@ -30,6 +31,17 @@ accident.
 
 Dictated text is always shown in quotes; status messages are not.
 
+## Settings
+
+The phone app's settings page has one option, **Send after**: how long the
+review screen waits before sending. Choose 1 to 5 seconds (default 2),
+*Immediately, no review* to send as soon as dictation finishes, or *Only
+when I press Select* to always wait for you.
+
+The setting is persisted on the watch, so it adds no startup delay; a
+change takes effect from the next launch. Phone launches always wait for
+Select regardless of the setting.
+
 Text follows the watch's Text Size setting (Settings → Notifications), so
 the review matches the system UI.
 
@@ -38,6 +50,7 @@ the review matches the system UI.
 Requires the [Pebble SDK](https://developer.repebble.com/sdk/):
 
 ```
+npm install
 pebble build
 pebble install --phone <phone-ip>
 ```

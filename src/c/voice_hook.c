@@ -3,8 +3,13 @@
 #define TRANSCRIPT_MAX 512
 #define STATUS_MAX 64
 
-// How long the review screen waits before sending on its own.
-#define REVIEW_DISMISS_MS 2000
+// How long the review screen waits before sending on its own, in seconds.
+// Set from the phone's settings page and persisted on the watch. 0 sends
+// without showing the review; REVIEW_DELAY_MANUAL never sends on its own.
+#define REVIEW_DELAY_DEFAULT_S 2
+#define REVIEW_DELAY_MAX_S 5
+#define REVIEW_DELAY_MANUAL 255
+#define PERSIST_KEY_REVIEW_DELAY 1
 #define BAR_TICK_MS 50
 #define BAR_HEIGHT 4
 // Height of the box the transcript is measured in; comfortably more than
@@ -25,6 +30,8 @@ static char s_quoted[TRANSCRIPT_MAX + 8];
 // One line of the chosen font, measured at load. Everything sized to the text
 // (status box, descender padding, scroll step) derives from this.
 static int16_t s_line_height;
+
+static uint32_t s_review_delay_s = REVIEW_DELAY_DEFAULT_S;
 
 static AppTimer *s_bar_timer;
 static uint32_t s_bar_elapsed_ms;
@@ -99,14 +106,14 @@ static void prv_send_transcript(void) {
 
 static void prv_bar_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  int16_t width = bounds.size.w * s_bar_elapsed_ms / REVIEW_DISMISS_MS;
+  int16_t width = bounds.size.w * s_bar_elapsed_ms / (s_review_delay_s * 1000);
   graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_fill_rect(ctx, GRect(0, 0, width, bounds.size.h), 0, GCornerNone);
 }
 
 static void prv_bar_tick(void *context) {
   s_bar_elapsed_ms += BAR_TICK_MS;
-  if (s_bar_elapsed_ms >= REVIEW_DISMISS_MS) {
+  if (s_bar_elapsed_ms >= s_review_delay_s * 1000) {
     s_bar_timer = NULL;
     prv_send_transcript();
     return;
@@ -143,8 +150,9 @@ static void prv_show_review(void) {
   s_reviewing = true;
 
   s_bar_elapsed_ms = 0;
-  if (s_phone_launched) {
-    // Launched from the phone: never send without an explicit Select.
+  if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
+    // Launched from the phone, or the user asked to always review: never
+    // send without an explicit Select.
     layer_set_hidden(s_bar_layer, true);
   } else {
     layer_set_hidden(s_bar_layer, false);
@@ -244,7 +252,11 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
   if (status == DictationSessionStatusSuccess) {
     strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
     s_transcript[TRANSCRIPT_MAX - 1] = '\0';
-    prv_show_review();
+    if (s_review_delay_s == 0 && !s_phone_launched) {
+      prv_send_transcript();
+    } else {
+      prv_show_review();
+    }
     return;
   }
   if (status == DictationSessionStatusFailureTranscriptionRejected) {
@@ -269,6 +281,35 @@ static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason,
   vibes_double_pulse();
   prv_show_status("Send failed");
   prv_exit_after(EXIT_DELAY_MS);
+}
+
+// --- Settings ----------------------------------------------------------------
+
+static bool prv_review_delay_is_valid(int32_t seconds) {
+  return (seconds >= 0 && seconds <= REVIEW_DELAY_MAX_S) || seconds == REVIEW_DELAY_MANUAL;
+}
+
+static void prv_load_review_delay(void) {
+  if (persist_exists(PERSIST_KEY_REVIEW_DELAY)) {
+    int32_t stored = persist_read_int(PERSIST_KEY_REVIEW_DELAY);
+    if (prv_review_delay_is_valid(stored)) {
+      s_review_delay_s = stored;
+    }
+  }
+}
+
+// The phone pushes the setting at every launch and whenever it is saved.
+static void prv_inbox_received(DictionaryIterator *iter, void *context) {
+  Tuple *tuple = dict_find(iter, MESSAGE_KEY_REVIEW_DELAY);
+  if (!tuple) {
+    return;
+  }
+  int32_t seconds = tuple->value->int32;
+  if (!prv_review_delay_is_valid(seconds)) {
+    return;
+  }
+  s_review_delay_s = seconds;
+  persist_write_int(PERSIST_KEY_REVIEW_DELAY, seconds);
 }
 
 // --- Window ------------------------------------------------------------------
@@ -330,6 +371,7 @@ static void prv_window_unload(Window *window) {
 
 static void prv_init(void) {
   s_phone_launched = launch_reason() == APP_LAUNCH_PHONE;
+  prv_load_review_delay();
 
   s_window = window_create();
   window_set_window_handlers(s_window, (WindowHandlers){
@@ -338,6 +380,7 @@ static void prv_init(void) {
   });
   window_stack_push(s_window, true);
 
+  app_message_register_inbox_received(prv_inbox_received);
   app_message_register_outbox_sent(prv_outbox_sent);
   app_message_register_outbox_failed(prv_outbox_failed);
   app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, app_message_outbox_size_maximum());
