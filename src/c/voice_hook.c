@@ -31,7 +31,7 @@ static void prv_show_transcript(void) {
   Layer *root = window_get_root_layer(s_window);
   GRect bounds = grect_inset(layer_get_bounds(root), GEdgeInsets(PBL_IF_ROUND_ELSE(10, 4)));
   layer_set_frame(text_layer_get_layer(s_status_layer), bounds);
-  text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
+  text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
   text_layer_set_text(s_status_layer, s_transcript);
 }
 
