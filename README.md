@@ -1,41 +1,26 @@
 # Voice Hook
 
-A Pebble watchapp that dictates a voice message and posts the transcript to a
-webhook. Open the app, speak, done.
+A Pebble watchapp that dictates a voice message and hands the transcript to
+its Android companion app. Open the app, speak, done.
 
 ## What it does
 
 1. On launch, a dictation session starts immediately.
-2. The transcript is sent to the phone via AppMessage.
-3. PebbleKit JS posts it to your configured webhook URL as
-   `multipart/form-data`:
+2. The transcript is sent to the phone via AppMessage (key `TRANSCRIPT`).
+3. The Pebble phone app routes the message to the declared companion app,
+   [pebble-telegram-webhook](https://github.com/ealang/pebble-telegram-webhook)
+   (`io.github.ealang.pebbletelegramagent`), which queues it durably and Acks.
+4. The watch shows `Queued` on the Ack and exits, or `Send failed` if the
+   message could not be delivered to the companion.
 
-   | part | value |
-   |---|---|
-   | `transcription` | the dictated text |
-   | `recordedAt` | epoch milliseconds |
-   | `client` | `watch` |
-
-4. The watch shows the outcome and exits: `Sent` on a 2xx, `HTTP <code>` on a
-   rejection, `Network error` if the connection fails, `No response` if the
-   server doesn't answer within 15 seconds.
-
-## Configuration
-
-In the phone app, open the watchapp's settings page:
-
-- **Webhook URL** — where to POST.
-- **Headers** — up to four name/value pairs sent with every request. Use these
-  for authorization, e.g. name `Authorization`, value `Bearer <token>`.
-
-Settings are stored on the phone. Nothing is hardcoded in the app.
+There is nothing to configure on the watch or in the phone app's settings
+page; the companion app owns delivery.
 
 ## Building
 
 Requires the [Pebble SDK](https://developer.repebble.com/sdk/):
 
 ```
-npm install
 pebble build
 pebble install --phone <phone-ip>
 ```

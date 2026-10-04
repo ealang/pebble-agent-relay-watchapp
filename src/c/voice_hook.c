@@ -60,12 +60,10 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
 }
 #endif
 
-static void prv_inbox_received(DictionaryIterator *iter, void *context) {
-  Tuple *response = dict_find(iter, MESSAGE_KEY_RESPONSE);
-  if (response) {
-    prv_set_status(response->value->cstring);
-    prv_exit_soon();
-  }
+// The companion app Acks once the transcript is durably queued on the phone.
+static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
+  prv_set_status("Queued");
+  prv_exit_soon();
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
@@ -98,9 +96,9 @@ static void prv_init(void) {
   });
   window_stack_push(s_window, true);
 
-  app_message_register_inbox_received(prv_inbox_received);
+  app_message_register_outbox_sent(prv_outbox_sent);
   app_message_register_outbox_failed(prv_outbox_failed);
-  app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
+  app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, app_message_outbox_size_maximum());
 
 #if defined(PBL_MICROPHONE)
   s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
