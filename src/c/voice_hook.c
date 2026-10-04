@@ -213,8 +213,15 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
   prv_scroll_by(prv_scroll_step());
 }
 
+// While the countdown is running, Select only pauses it, like any other
+// button; a second press sends. That keeps a stray tap from sending early.
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_reviewing) {
+  if (!s_reviewing) {
+    return;
+  }
+  if (s_bar_timer) {
+    prv_pause_review();
+  } else {
     prv_send_transcript();
   }
 }

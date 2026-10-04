@@ -21,7 +21,7 @@ its Android companion app. Open the app, speak, done.
 
 - **Up / Down** scroll the transcript one line at a time (one page on round
   watches). Any press cancels the countdown; the bar disappears.
-- **Select** sends now.
+- **Select** pauses the countdown; press it again to send.
 - **Back** discards the transcript and starts a new dictation.
 - **Long-press Back** exits without sending.
 
@@ -34,7 +34,7 @@ Dictated text is always shown in quotes; status messages are not.
 ## Settings
 
 The phone app's settings page has one option, **Send after**: how long the
-review screen waits before sending. Choose 1 to 5 seconds (default 2),
+review screen waits before sending. Choose 1, 2 (default) or 5 seconds,
 *Immediately, no review* to send as soon as dictation finishes, or *Only
 when I press Select* to always wait for you.
 
