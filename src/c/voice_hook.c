@@ -12,6 +12,8 @@ static Window *s_window;
 static TextLayer *s_status_layer;
 static char s_status_text[STATUS_MAX];
 static char s_transcript[TRANSCRIPT_MAX];
+// Whether the system confirmation screen is in use this session.
+static bool s_confirmation;
 
 #if defined(PBL_MICROPHONE)
 static DictationSession *s_dictation;
@@ -21,6 +23,16 @@ static void prv_set_status(const char *text) {
   strncpy(s_status_text, text, STATUS_MAX - 1);
   s_status_text[STATUS_MAX - 1] = '\0';
   text_layer_set_text(s_status_layer, s_status_text);
+}
+
+// Eyes-free mode skipped the review screen, so flash the transcript as a
+// non-blocking chance to glance at what went out.
+static void prv_show_transcript(void) {
+  Layer *root = window_get_root_layer(s_window);
+  GRect bounds = grect_inset(layer_get_bounds(root), GEdgeInsets(PBL_IF_ROUND_ELSE(10, 4)));
+  layer_set_frame(text_layer_get_layer(s_status_layer), bounds);
+  text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text(s_status_layer, s_transcript);
 }
 
 static void prv_exit_soon_callback(void *context) {
@@ -85,7 +97,11 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
 // Vibes mirror the on-screen status so the outcome is clear without looking.
 static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   vibes_short_pulse();
-  prv_set_status("Queued");
+  if (s_confirmation) {
+    prv_set_status("Queued");
+  } else {
+    prv_show_transcript();
+  }
   prv_exit_soon();
 }
 
@@ -133,8 +149,8 @@ static void prv_init(void) {
     // sends-and-exits on its own — an exit would tear down PKJS and close
     // the settings page with it. Eyes-free mode is for wrist launches only.
     bool phone_launched = launch_reason() == APP_LAUNCH_PHONE;
-    dictation_session_enable_confirmation(
-        s_dictation, phone_launched || prv_setting(PERSIST_KEY_CONFIRMATION));
+    s_confirmation = phone_launched || prv_setting(PERSIST_KEY_CONFIRMATION);
+    dictation_session_enable_confirmation(s_dictation, s_confirmation);
     dictation_session_enable_error_dialogs(
         s_dictation, phone_launched || prv_setting(PERSIST_KEY_ERROR_DIALOGS));
     dictation_session_start(s_dictation);
