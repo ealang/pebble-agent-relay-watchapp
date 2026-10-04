@@ -9,7 +9,12 @@
 #define REVIEW_DELAY_DEFAULT_S 2
 #define REVIEW_DELAY_MAX_S 5
 #define REVIEW_DELAY_MANUAL 255
-#define PERSIST_KEY_REVIEW_DELAY 1
+// Keys 1 and 2 held boolean toggles in builds before the review screen; a
+// stale false there would read back as 0 ("send immediately"), so they are
+// retired and wiped rather than reused.
+#define PERSIST_KEY_LEGACY_CONFIRMATION 1
+#define PERSIST_KEY_LEGACY_ERROR_DIALOGS 2
+#define PERSIST_KEY_REVIEW_DELAY 3
 #define BAR_TICK_MS 50
 #define BAR_HEIGHT 4
 // Height of the box the transcript is measured in; comfortably more than
@@ -290,6 +295,8 @@ static bool prv_review_delay_is_valid(int32_t seconds) {
 }
 
 static void prv_load_review_delay(void) {
+  persist_delete(PERSIST_KEY_LEGACY_CONFIRMATION);
+  persist_delete(PERSIST_KEY_LEGACY_ERROR_DIALOGS);
   if (persist_exists(PERSIST_KEY_REVIEW_DELAY)) {
     int32_t stored = persist_read_int(PERSIST_KEY_REVIEW_DELAY);
     if (prv_review_delay_is_valid(stored)) {
