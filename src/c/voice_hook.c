@@ -3,6 +3,11 @@
 #define TRANSCRIPT_MAX 512
 #define STATUS_MAX 64
 
+// Persisted settings, pushed from the config page via AppMessage. Both
+// default to enabled until the user says otherwise.
+#define PERSIST_KEY_CONFIRMATION 1
+#define PERSIST_KEY_ERROR_DIALOGS 2
+
 static Window *s_window;
 static TextLayer *s_status_layer;
 static char s_status_text[STATUS_MAX];
@@ -60,13 +65,32 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
 }
 #endif
 
+static bool prv_setting(uint32_t key) {
+  return persist_exists(key) ? persist_read_bool(key) : true;
+}
+
+// Settings arrive from the config page; persist them for the next launch.
+static void prv_inbox_received(DictionaryIterator *iter, void *context) {
+  Tuple *tuple = dict_find(iter, MESSAGE_KEY_CONFIRMATION);
+  if (tuple) {
+    persist_write_bool(PERSIST_KEY_CONFIRMATION, tuple->value->int32 != 0);
+  }
+  tuple = dict_find(iter, MESSAGE_KEY_ERROR_DIALOGS);
+  if (tuple) {
+    persist_write_bool(PERSIST_KEY_ERROR_DIALOGS, tuple->value->int32 != 0);
+  }
+}
+
 // The companion app Acks once the transcript is durably queued on the phone.
+// Vibes mirror the on-screen status so the outcome is clear without looking.
 static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
+  vibes_short_pulse();
   prv_set_status("Queued");
   prv_exit_soon();
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  vibes_double_pulse();
   prv_set_status("Send failed");
   prv_exit_soon();
 }
@@ -96,6 +120,7 @@ static void prv_init(void) {
   });
   window_stack_push(s_window, true);
 
+  app_message_register_inbox_received(prv_inbox_received);
   app_message_register_outbox_sent(prv_outbox_sent);
   app_message_register_outbox_failed(prv_outbox_failed);
   app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, app_message_outbox_size_maximum());
@@ -103,6 +128,8 @@ static void prv_init(void) {
 #if defined(PBL_MICROPHONE)
   s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
   if (s_dictation) {
+    dictation_session_enable_confirmation(s_dictation, prv_setting(PERSIST_KEY_CONFIRMATION));
+    dictation_session_enable_error_dialogs(s_dictation, prv_setting(PERSIST_KEY_ERROR_DIALOGS));
     dictation_session_start(s_dictation);
   } else {
     prv_set_status("No microphone");

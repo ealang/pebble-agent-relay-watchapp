@@ -13,14 +13,24 @@ its Android companion app. Open the app, speak, done.
 4. The watch shows `Queued` on the Ack and exits, or `Send failed` if the
    message could not be delivered to the companion.
 
-There is nothing to configure on the watch or in the phone app's settings
-page; the companion app owns delivery.
+## Settings
+
+The phone app's settings page offers two toggles, both on by default:
+
+- **Confirm transcript** — review the dictated text on the watch before
+  sending. Turn off for eyes-free use: speak and drop your wrist; a short
+  vibe means queued, a double vibe means the send failed.
+- **Show error dialogs** — the system dialog when dictation fails.
+
+Settings are persisted on the watch, so they add no startup delay; a change
+takes effect from the next launch.
 
 ## Building
 
 Requires the [Pebble SDK](https://developer.repebble.com/sdk/):
 
 ```
+npm install
 pebble build
 pebble install --phone <phone-ip>
 ```
