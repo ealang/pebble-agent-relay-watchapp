@@ -68,7 +68,13 @@ static void prv_exit_callback(void *context) {
   window_stack_pop_all(false);
 }
 
+// Leaves a failure on screen briefly, then exits. When the phone launched
+// the app (install, "Start app", or the settings page) exiting would also
+// close the settings page, so the message stays until the user presses Back.
 static void prv_exit_after(uint32_t ms) {
+  if (s_phone_launched) {
+    return;
+  }
   app_timer_register(ms, prv_exit_callback, NULL);
 }
 
@@ -271,7 +277,7 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     }
     return;
   }
-  if (status == DictationSessionStatusFailureTranscriptionRejected) {
+  if (status == DictationSessionStatusFailureTranscriptionRejected && !s_phone_launched) {
     // The user backed out; nothing to report.
     window_stack_pop_all(false);
     return;

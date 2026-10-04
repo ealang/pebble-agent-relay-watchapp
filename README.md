@@ -25,9 +25,10 @@ its Android companion app. Open the app, speak, done.
 - **Back** discards the transcript and starts a new dictation.
 - **Long-press Back** exits without sending.
 
-When the app is launched from the phone (the "Start app" button or an
-install), the review opens without a countdown so nothing is sent by
-accident.
+When the app is launched from the phone (the "Start app" button, an
+install, or opening the settings page), the review opens without a
+countdown so nothing is sent by accident, and failure messages stay on
+screen until you press Back so the settings page is not closed under you.
 
 Dictated text is always shown in quotes; status messages are not.
 
