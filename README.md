@@ -6,31 +6,38 @@ its Android companion app. Open the app, speak, done.
 ## What it does
 
 1. On launch, a dictation session starts immediately.
-2. The transcript is sent to the phone via AppMessage (key `TRANSCRIPT`).
-3. The Pebble phone app routes the message to the declared companion app,
+2. The transcript appears on a review screen, in quotes, with a bar along
+   the bottom counting down two seconds. Do nothing and it sends on its own.
+3. The transcript is sent to the phone via AppMessage (key `TRANSCRIPT`).
+4. The Pebble phone app routes the message to the declared companion app,
    [pebble-telegram-webhook](https://github.com/ealang/pebble-telegram-webhook)
    (`io.github.ealang.pebbletelegramagent`), which queues it durably and Acks.
-4. The watch shows `Queued` on the Ack and exits, or `Send failed` if the
-   message could not be delivered to the companion.
+5. On the Ack the watch vibrates once and exits. Failures (`Send failed`,
+   `Phone unreachable`, `No speech detected`, ...) stay on screen for two
+   seconds, with a double vibe for a failed send.
 
-## Settings
+## The review screen
 
-The phone app's settings page offers two toggles, both on by default:
+- **Up / Down** scroll the transcript one line at a time (one page on round
+  watches). Any press cancels the countdown; the bar disappears.
+- **Select** sends now.
+- **Back** discards the transcript and starts a new dictation.
+- **Long-press Back** exits without sending.
 
-- **Confirm transcript** — review the dictated text on the watch before
-  sending. Turn off for eyes-free use: speak and drop your wrist; a short
-  vibe means queued, a double vibe means the send failed.
-- **Show error dialogs** — the system dialog when dictation fails.
+When the app is launched from the phone (the "Start app" button or an
+install), the review opens without a countdown so nothing is sent by
+accident.
 
-Settings are persisted on the watch, so they add no startup delay; a change
-takes effect from the next launch.
+Dictated text is always shown in quotes; status messages are not.
+
+Text follows the watch's Text Size setting (Settings → Notifications), so
+the review matches the system UI.
 
 ## Building
 
 Requires the [Pebble SDK](https://developer.repebble.com/sdk/):
 
 ```
-npm install
 pebble build
 pebble install --phone <phone-ip>
 ```

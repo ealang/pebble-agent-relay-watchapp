@@ -3,17 +3,33 @@
 #define TRANSCRIPT_MAX 512
 #define STATUS_MAX 64
 
-// Persisted settings, pushed from the config page via AppMessage. Both
-// default to enabled until the user says otherwise.
-#define PERSIST_KEY_CONFIRMATION 1
-#define PERSIST_KEY_ERROR_DIALOGS 2
+// How long the review screen waits before sending on its own.
+#define REVIEW_DISMISS_MS 2000
+#define BAR_TICK_MS 50
+#define BAR_HEIGHT 4
+// Height of the box the transcript is measured in; comfortably more than
+// TRANSCRIPT_MAX characters can fill at the largest font on the narrowest screen.
+#define TEXT_MAX_HEIGHT 4000
+#define EXIT_DELAY_MS 2000
 
 static Window *s_window;
 static TextLayer *s_status_layer;
+static ScrollLayer *s_scroll_layer;
+static TextLayer *s_transcript_layer;
+static Layer *s_bar_layer;
+
 static char s_status_text[STATUS_MAX];
 static char s_transcript[TRANSCRIPT_MAX];
-// Whether the system confirmation screen is in use this session.
-static bool s_confirmation;
+static char s_quoted[TRANSCRIPT_MAX + 8];
+
+// One line of the chosen font, measured at load. Everything sized to the text
+// (status box, descender padding, scroll step) derives from this.
+static int16_t s_line_height;
+
+static AppTimer *s_bar_timer;
+static uint32_t s_bar_elapsed_ms;
+static bool s_reviewing;
+static bool s_phone_launched;
 
 #if defined(PBL_MICROPHONE)
 static DictationSession *s_dictation;
@@ -31,120 +47,290 @@ static GFont prv_content_font(void) {
   }
 }
 
-static void prv_set_status(const char *text) {
-  strncpy(s_status_text, text, STATUS_MAX - 1);
-  s_status_text[STATUS_MAX - 1] = '\0';
-  text_layer_set_text(s_status_layer, s_status_text);
+static int16_t prv_measure_line_height(GFont font) {
+  return graphics_text_layout_get_content_size("Ag", font, GRect(0, 0, 1000, 1000),
+                                               GTextOverflowModeWordWrap, GTextAlignmentLeft).h;
 }
 
-// Eyes-free mode skipped the review screen, so flash the transcript as a
-// non-blocking chance to glance at what went out.
-static void prv_show_transcript(void) {
-  Layer *root = window_get_root_layer(s_window);
-  GRect bounds = grect_inset(layer_get_bounds(root), GEdgeInsets(PBL_IF_ROUND_ELSE(10, 4)));
-  layer_set_frame(text_layer_get_layer(s_status_layer), bounds);
-  text_layer_set_text(s_status_layer, s_transcript);
-}
-
-static void prv_exit_soon_callback(void *context) {
+static void prv_exit_callback(void *context) {
   window_stack_pop_all(false);
 }
 
 static void prv_exit_after(uint32_t ms) {
-  app_timer_register(ms, prv_exit_soon_callback, NULL);
+  app_timer_register(ms, prv_exit_callback, NULL);
 }
 
-static void prv_exit_soon(void) {
-  prv_exit_after(2000);
+static void prv_stop_bar(void) {
+  if (s_bar_timer) {
+    app_timer_cancel(s_bar_timer);
+    s_bar_timer = NULL;
+  }
+  layer_set_hidden(s_bar_layer, true);
+}
+
+// Status text is unquoted; only dictated speech is shown in quotes.
+static void prv_show_status(const char *text) {
+  s_reviewing = false;
+  prv_stop_bar();
+  strncpy(s_status_text, text, STATUS_MAX - 1);
+  s_status_text[STATUS_MAX - 1] = '\0';
+  text_layer_set_text(s_status_layer, s_status_text);
+  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_status_layer), false);
 }
 
 static void prv_send_transcript(void) {
+  prv_show_status("Sending...");
+
   DictionaryIterator *out;
-  AppMessageResult result = app_message_outbox_begin(&out);
-  if (result != APP_MSG_OK) {
-    prv_set_status("Phone unreachable");
-    prv_exit_soon();
+  if (app_message_outbox_begin(&out) != APP_MSG_OK) {
+    prv_show_status("Phone unreachable");
+    prv_exit_after(EXIT_DELAY_MS);
     return;
   }
-
   dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript);
   if (app_message_outbox_send() != APP_MSG_OK) {
-    prv_set_status("Phone unreachable");
-    prv_exit_soon();
-    return;
+    prv_show_status("Phone unreachable");
+    prv_exit_after(EXIT_DELAY_MS);
   }
-
-  prv_set_status("Sending...");
 }
 
+// --- Review screen -----------------------------------------------------------
+
+static void prv_bar_update(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  int16_t width = bounds.size.w * s_bar_elapsed_ms / REVIEW_DISMISS_MS;
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, GRect(0, 0, width, bounds.size.h), 0, GCornerNone);
+}
+
+static void prv_bar_tick(void *context) {
+  s_bar_elapsed_ms += BAR_TICK_MS;
+  if (s_bar_elapsed_ms >= REVIEW_DISMISS_MS) {
+    s_bar_timer = NULL;
+    prv_send_transcript();
+    return;
+  }
+  layer_mark_dirty(s_bar_layer);
+  s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
+}
+
+// Any interaction cancels the auto-send; the bar disappears.
+static void prv_pause_review(void) {
+  prv_stop_bar();
+}
+
+static void prv_show_review(void) {
+  snprintf(s_quoted, sizeof(s_quoted), "“%s”", s_transcript);
+  text_layer_set_text(s_transcript_layer, s_quoted);
+
+  // The firmware measures text within the layer's current bounds, so grow the
+  // layer back to its full measuring height first; otherwise a retake that is
+  // longer than the previous transcript is clipped to the old size.
+  GRect frame = layer_get_frame(text_layer_get_layer(s_transcript_layer));
+  text_layer_set_size(s_transcript_layer, GSize(frame.size.w, TEXT_MAX_HEIGHT));
+  GSize content = text_layer_get_content_size(s_transcript_layer);
+  content.w = frame.size.w;
+  content.h += s_line_height / 2;  // room for the last line's descenders
+  text_layer_set_size(s_transcript_layer, content);
+  // Leave room under the text so the bar never covers the last line.
+  scroll_layer_set_content_size(s_scroll_layer,
+      GSize(content.w, frame.origin.y + content.h + PBL_IF_ROUND_ELSE(30, BAR_HEIGHT * 3)));
+  scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
+
+  layer_set_hidden(text_layer_get_layer(s_status_layer), true);
+  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false);
+  s_reviewing = true;
+
+  s_bar_elapsed_ms = 0;
+  if (s_phone_launched) {
+    // Launched from the phone: never send without an explicit Select.
+    layer_set_hidden(s_bar_layer, true);
+  } else {
+    layer_set_hidden(s_bar_layer, false);
+    layer_mark_dirty(s_bar_layer);
+    s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
+  }
+}
+
+static void prv_retake(void) {
+  prv_show_status("Listening...");
 #if defined(PBL_MICROPHONE)
+  dictation_session_start(s_dictation);
+#endif
+}
+
+// Step scrolling, no animation: one text line on rectangular screens, one
+// page on round ones (where the text is laid out per page).
+static void prv_scroll_by(int16_t dy) {
+  GRect frame = layer_get_frame(scroll_layer_get_layer(s_scroll_layer));
+  GSize content = scroll_layer_get_content_size(s_scroll_layer);
+#if defined(PBL_ROUND)
+  // Pages must stay aligned, so the last page starts on a page boundary.
+  int16_t min_y = -((content.h - 1) / frame.size.h) * frame.size.h;
+#else
+  int16_t min_y = frame.size.h - content.h;
+  if (min_y > 0) {
+    min_y = 0;
+  }
+#endif
+  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+  offset.y -= dy;
+  if (offset.y < min_y) {
+    offset.y = min_y;
+  }
+  if (offset.y > 0) {
+    offset.y = 0;
+  }
+  scroll_layer_set_content_offset(s_scroll_layer, offset, false);
+}
+
+static int16_t prv_scroll_step(void) {
+  return PBL_IF_ROUND_ELSE(layer_get_frame(scroll_layer_get_layer(s_scroll_layer)).size.h,
+                           s_line_height);
+}
+
+static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
+  prv_pause_review();
+  prv_scroll_by(-prv_scroll_step());
+}
+
+static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
+  prv_pause_review();
+  prv_scroll_by(prv_scroll_step());
+}
+
+static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
+  if (s_reviewing) {
+    prv_send_transcript();
+  }
+}
+
+static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
+  if (s_reviewing) {
+    prv_retake();
+  } else {
+    window_stack_pop_all(true);
+  }
+}
+
+static void prv_click_config(void *context) {
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, 150, prv_up_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 150, prv_down_click);
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_select_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, prv_back_click);
+}
+
+// --- Dictation and AppMessage ------------------------------------------------
+
+#if defined(PBL_MICROPHONE)
+static const char *prv_dictation_failure_text(DictationSessionStatus status) {
+  switch (status) {
+    case DictationSessionStatusFailureNoSpeechDetected:
+      return "No speech detected";
+    case DictationSessionStatusFailureConnectivityError:
+      return "Phone unreachable";
+    case DictationSessionStatusFailureDisabled:
+      return "Dictation disabled";
+    case DictationSessionStatusFailureSystemAborted:
+      return "Aborted";
+    default:
+      return "Dictation error";
+  }
+}
+
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
                                    char *transcription, void *context) {
-  if (status != DictationSessionStatusSuccess) {
-    // The system already showed its own error dialog for this.
+  if (status == DictationSessionStatusSuccess) {
+    strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
+    s_transcript[TRANSCRIPT_MAX - 1] = '\0';
+    prv_show_review();
+    return;
+  }
+  if (status == DictationSessionStatusFailureTranscriptionRejected) {
+    // The user backed out; nothing to report.
     window_stack_pop_all(false);
     return;
   }
-
-  strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
-  s_transcript[TRANSCRIPT_MAX - 1] = '\0';
-  prv_send_transcript();
+  prv_show_status(prv_dictation_failure_text(status));
+  prv_exit_after(EXIT_DELAY_MS);
 }
 #endif
 
-static bool prv_setting(uint32_t key) {
-  return persist_exists(key) ? persist_read_bool(key) : true;
-}
-
-// Settings arrive from the config page; persist them for the next launch.
-static void prv_inbox_received(DictionaryIterator *iter, void *context) {
-  Tuple *tuple = dict_find(iter, MESSAGE_KEY_CONFIRMATION);
-  if (tuple) {
-    persist_write_bool(PERSIST_KEY_CONFIRMATION, tuple->value->int32 != 0);
-  }
-  tuple = dict_find(iter, MESSAGE_KEY_ERROR_DIALOGS);
-  if (tuple) {
-    persist_write_bool(PERSIST_KEY_ERROR_DIALOGS, tuple->value->int32 != 0);
-  }
-}
-
 // The companion app Acks once the transcript is durably queued on the phone.
-// Vibes mirror the on-screen status so the outcome is clear without looking.
+// On success there is nothing left to say, so the app exits at once; a short
+// vibe confirms it without looking. Only failures linger on screen.
 static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   vibes_short_pulse();
-  if (s_confirmation) {
-    prv_set_status("Queued");
-    prv_exit_soon();
-  } else {
-    prv_show_transcript();
-    prv_exit_after(5000);
-  }
+  window_stack_pop_all(false);
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
   vibes_double_pulse();
-  prv_set_status("Send failed");
-  prv_exit_soon();
+  prv_show_status("Send failed");
+  prv_exit_after(EXIT_DELAY_MS);
 }
+
+// --- Window ------------------------------------------------------------------
 
 static void prv_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
+  GFont font = prv_content_font();
+  s_line_height = prv_measure_line_height(font);
 
-  s_status_layer = text_layer_create(GRect(4, bounds.size.h / 2 - 24, bounds.size.w - 8, 48));
+  // Two lines of status text, centered on screen.
+  int16_t status_h = s_line_height * 5 / 2;
+  s_status_layer = text_layer_create(
+      GRect(4, (bounds.size.h - status_h) / 2, bounds.size.w - 8, status_h));
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_status_layer, prv_content_font());
+  text_layer_set_font(s_status_layer, font);
   text_layer_set_background_color(s_status_layer, GColorClear);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
 
-  prv_set_status("Listening...");
+  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 4)));
+  s_scroll_layer = scroll_layer_create(bounds);
+  scroll_layer_set_shadow_hidden(s_scroll_layer, true);
+  window_set_click_config_provider(window, prv_click_config);
+  // On round screens, start lower so the first line lands on a wide chord.
+  s_transcript_layer = text_layer_create(
+      GRect(text_bounds.origin.x, PBL_IF_ROUND_ELSE(26, 0), text_bounds.size.w, TEXT_MAX_HEIGHT));
+  text_layer_set_font(s_transcript_layer, font);
+  text_layer_set_background_color(s_transcript_layer, GColorClear);
+  text_layer_set_text_alignment(s_transcript_layer, GTextAlignmentCenter);
+  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_transcript_layer));
+  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
+  layer_add_child(root, scroll_layer_get_layer(s_scroll_layer));
+#if defined(PBL_ROUND)
+  // Text flow needs the layer to be in the window hierarchy already.
+  scroll_layer_set_paging(s_scroll_layer, true);
+  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 8);
+#endif
+
+  // On round screens the very bottom is too narrow, so the bar sits on a
+  // wider chord a little higher up.
+  GRect bar_frame = PBL_IF_ROUND_ELSE(
+      GRect(34, bounds.size.h - 18, bounds.size.w - 68, BAR_HEIGHT),
+      GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT));
+  s_bar_layer = layer_create(bar_frame);
+  layer_set_update_proc(s_bar_layer, prv_bar_update);
+  layer_set_hidden(s_bar_layer, true);
+  layer_add_child(root, s_bar_layer);
+
+  prv_show_status("Listening...");
 }
 
 static void prv_window_unload(Window *window) {
+  prv_stop_bar();
+  layer_destroy(s_bar_layer);
+  text_layer_destroy(s_transcript_layer);
+  scroll_layer_destroy(s_scroll_layer);
   text_layer_destroy(s_status_layer);
 }
 
 static void prv_init(void) {
+  s_phone_launched = launch_reason() == APP_LAUNCH_PHONE;
+
   s_window = window_create();
   window_set_window_handlers(s_window, (WindowHandlers){
     .load = prv_window_load,
@@ -152,7 +338,6 @@ static void prv_init(void) {
   });
   window_stack_push(s_window, true);
 
-  app_message_register_inbox_received(prv_inbox_received);
   app_message_register_outbox_sent(prv_outbox_sent);
   app_message_register_outbox_failed(prv_outbox_failed);
   app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, app_message_outbox_size_maximum());
@@ -160,23 +345,17 @@ static void prv_init(void) {
 #if defined(PBL_MICROPHONE)
   s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
   if (s_dictation) {
-    // A phone launch (settings page or CoreApp's "Start app") is always
-    // interactive: confirmation and error dialogs stay on so the app never
-    // sends-and-exits on its own — an exit would tear down PKJS and close
-    // the settings page with it. Eyes-free mode is for wrist launches only.
-    bool phone_launched = launch_reason() == APP_LAUNCH_PHONE;
-    s_confirmation = phone_launched || prv_setting(PERSIST_KEY_CONFIRMATION);
-    dictation_session_enable_confirmation(s_dictation, s_confirmation);
-    dictation_session_enable_error_dialogs(
-        s_dictation, phone_launched || prv_setting(PERSIST_KEY_ERROR_DIALOGS));
+    // Our review screen replaces the system's confirmation and error dialogs.
+    dictation_session_enable_confirmation(s_dictation, false);
+    dictation_session_enable_error_dialogs(s_dictation, false);
     dictation_session_start(s_dictation);
   } else {
-    prv_set_status("No microphone");
-    prv_exit_soon();
+    prv_show_status("No microphone");
+    prv_exit_after(EXIT_DELAY_MS);
   }
 #else
-  prv_set_status("No microphone");
-  prv_exit_soon();
+  prv_show_status("No microphone");
+  prv_exit_after(EXIT_DELAY_MS);
 #endif
 }
 
