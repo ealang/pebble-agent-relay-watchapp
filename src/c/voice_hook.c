@@ -128,8 +128,15 @@ static void prv_init(void) {
 #if defined(PBL_MICROPHONE)
   s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
   if (s_dictation) {
-    dictation_session_enable_confirmation(s_dictation, prv_setting(PERSIST_KEY_CONFIRMATION));
-    dictation_session_enable_error_dialogs(s_dictation, prv_setting(PERSIST_KEY_ERROR_DIALOGS));
+    // A phone launch (settings page or CoreApp's "Start app") is always
+    // interactive: confirmation and error dialogs stay on so the app never
+    // sends-and-exits on its own — an exit would tear down PKJS and close
+    // the settings page with it. Eyes-free mode is for wrist launches only.
+    bool phone_launched = launch_reason() == APP_LAUNCH_PHONE;
+    dictation_session_enable_confirmation(
+        s_dictation, phone_launched || prv_setting(PERSIST_KEY_CONFIRMATION));
+    dictation_session_enable_error_dialogs(
+        s_dictation, phone_launched || prv_setting(PERSIST_KEY_ERROR_DIALOGS));
     dictation_session_start(s_dictation);
   } else {
     prv_set_status("No microphone");
