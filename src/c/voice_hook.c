@@ -19,6 +19,18 @@ static bool s_confirmation;
 static DictationSession *s_dictation;
 #endif
 
+// Follow the watch's Text Size setting so our text matches the system UI.
+static GFont prv_content_font(void) {
+  switch (preferred_content_size()) {
+    case PreferredContentSizeSmall:
+      return fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+    case PreferredContentSizeMedium:
+      return fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+    default:
+      return fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+  }
+}
+
 static void prv_set_status(const char *text) {
   strncpy(s_status_text, text, STATUS_MAX - 1);
   s_status_text[STATUS_MAX - 1] = '\0';
@@ -31,7 +43,6 @@ static void prv_show_transcript(void) {
   Layer *root = window_get_root_layer(s_window);
   GRect bounds = grect_inset(layer_get_bounds(root), GEdgeInsets(PBL_IF_ROUND_ELSE(10, 4)));
   layer_set_frame(text_layer_get_layer(s_status_layer), bounds);
-  text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
   text_layer_set_text(s_status_layer, s_transcript);
 }
 
@@ -39,8 +50,12 @@ static void prv_exit_soon_callback(void *context) {
   window_stack_pop_all(false);
 }
 
+static void prv_exit_after(uint32_t ms) {
+  app_timer_register(ms, prv_exit_soon_callback, NULL);
+}
+
 static void prv_exit_soon(void) {
-  app_timer_register(2000, prv_exit_soon_callback, NULL);
+  prv_exit_after(2000);
 }
 
 static void prv_send_transcript(void) {
@@ -99,10 +114,11 @@ static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   vibes_short_pulse();
   if (s_confirmation) {
     prv_set_status("Queued");
+    prv_exit_soon();
   } else {
     prv_show_transcript();
+    prv_exit_after(5000);
   }
-  prv_exit_soon();
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
@@ -117,7 +133,7 @@ static void prv_window_load(Window *window) {
 
   s_status_layer = text_layer_create(GRect(4, bounds.size.h / 2 - 24, bounds.size.w - 8, 48));
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_font(s_status_layer, prv_content_font());
   text_layer_set_background_color(s_status_layer, GColorClear);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
 
