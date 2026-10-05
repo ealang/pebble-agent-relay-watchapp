@@ -21,7 +21,7 @@ its Android companion app. Open the app, speak, done.
 
 - **Up / Down** scroll the transcript one line at a time (one page on round
   watches). Any press cancels the countdown; the bar disappears.
-- **Select** pauses the countdown; press it again to send.
+- **Select** sends right away.
 - **Back** discards the transcript and starts a new dictation.
 - **Long-press Back** exits without sending.
 
