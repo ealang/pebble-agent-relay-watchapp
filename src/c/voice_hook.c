@@ -227,6 +227,7 @@ static void prv_pause_review(void) {
   }
   prv_stop_bar();
   prv_show_footer("Not sent");
+  layer_mark_dirty(s_hints_layer);
 }
 
 // Lays out text in the scrollable review area and shows it with button hints.
@@ -313,9 +314,9 @@ static void prv_scroll_by(int16_t dy) {
   layer_mark_dirty(s_hints_layer);
 }
 
-// Small solid triangle with its tip at (x, y), pointing dx/dy (one of them 0).
-static void prv_fill_triangle(GContext *ctx, int16_t x, int16_t y, int16_t dx, int16_t dy) {
-  const int16_t len = 5;
+// Solid triangle with its tip at (x, y), pointing dx/dy (one of them 0).
+static void prv_fill_triangle(GContext *ctx, int16_t x, int16_t y, int16_t dx, int16_t dy,
+                              int16_t len) {
   for (int16_t i = 0; i < len; i++) {
     if (dx) {
       int16_t cx = x - dx * i;
@@ -327,29 +328,32 @@ static void prv_fill_triangle(GContext *ctx, int16_t x, int16_t y, int16_t dx, i
   }
 }
 
-// Back records again (a record dot), Select sends or closes (a play-style
-// triangle), and Up/Down arrows appear only when there is more text that way.
+// Back records again (a record dot). The triangle by Select appears only when
+// Select would send: a paused or manual review, not the countdown or after a
+// send. Up/Down arrows appear only when there is more text that way.
 static void prv_hints_update(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
   int16_t w = b.size.w;
   int16_t h = b.size.h;
   int16_t up_y = PBL_IF_ROUND_ELSE(50, h / 6);
   int16_t down_y = PBL_IF_ROUND_ELSE(h - 50, h * 5 / 6 - 8);
-  int16_t edge_x = PBL_IF_ROUND_ELSE(w - 14, w - 3);
+  int16_t edge_x = PBL_IF_ROUND_ELSE(w - 20, w - 8);
   graphics_context_set_stroke_color(ctx, GColorBlack);
 
   if (s_hint_buttons) {
     graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
-    graphics_fill_circle(ctx, GPoint(PBL_IF_ROUND_ELSE(16, 5), up_y), 3);
-    prv_fill_triangle(ctx, PBL_IF_ROUND_ELSE(w - 4, w - 2), h / 2, 1, 0);
+    graphics_fill_circle(ctx, GPoint(PBL_IF_ROUND_ELSE(18, 7), up_y), 5);
+  }
+  if (s_reviewing && !s_bar_timer) {
+    prv_fill_triangle(ctx, PBL_IF_ROUND_ELSE(w - 4, w - 2), h / 2, 1, 0, 9);
   }
 
   int16_t offset_y = scroll_layer_get_content_offset(s_scroll_layer).y;
   if (offset_y < 0) {
-    prv_fill_triangle(ctx, edge_x, up_y - 3, 0, -1);
+    prv_fill_triangle(ctx, edge_x, up_y - 4, 0, -1, 7);
   }
   if (offset_y > prv_scroll_min_y()) {
-    prv_fill_triangle(ctx, edge_x, down_y + 3, 0, 1);
+    prv_fill_triangle(ctx, edge_x, down_y + 4, 0, 1, 7);
   }
 }
 
@@ -593,7 +597,7 @@ static void prv_window_load(Window *window) {
   text_layer_set_background_color(s_status_layer, GColorClear);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
 
-  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 11)));
+  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 15)));
   s_scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
   window_set_click_config_provider(window, prv_click_config);
@@ -609,7 +613,7 @@ static void prv_window_load(Window *window) {
 #if defined(PBL_ROUND)
   // Text flow needs the layer to be in the window hierarchy already.
   scroll_layer_set_paging(s_scroll_layer, true);
-  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 14);
+  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 20);
 #endif
 
   // On round screens the very bottom is too narrow, so the bar sits on a
