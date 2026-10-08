@@ -46,9 +46,8 @@ silently.
 
 When the app is launched from the phone (the "Start app" button, an
 install, or opening the settings page), the review opens without a
-countdown so nothing is sent by accident, and failures stay up so the
-settings page is not closed under you. Backing out of dictation still
-exits at once.
+countdown so nothing is sent by accident, and the app never exits on its
+own so the settings page is not closed under you.
 
 Dictated text is always shown in quotes; status messages are not.
 
