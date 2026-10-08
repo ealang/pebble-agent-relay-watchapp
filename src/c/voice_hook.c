@@ -1,7 +1,7 @@
 #include <pebble.h>
 
 #define TRANSCRIPT_MAX 512
-#define STATUS_MAX 64
+#define STATUS_MAX 96
 
 // How long the review screen waits before sending on its own, in seconds.
 // Set from the phone's settings page and persisted on the watch. 0 sends
@@ -97,19 +97,52 @@ static void prv_show_status(const char *text) {
   layer_set_hidden(text_layer_get_layer(s_status_layer), false);
 }
 
+// Every failure ends here: a double vibe, and the reason stays on screen
+// until Back so it can actually be read. Each message names one condition.
+static void prv_fail(const char *text) {
+  vibes_double_pulse();
+  prv_show_status(text);
+}
+
+static const char *prv_app_message_text(AppMessageResult result) {
+  static char buf[32];
+  switch (result) {
+    case APP_MSG_SEND_TIMEOUT:
+      // The firmware waits 10 s for the phone's Ack and ignores a late one,
+      // so the companion may well have queued the message.
+      return "No reply from phone in 10 s (may have sent)";
+    case APP_MSG_SEND_REJECTED:
+      return "Phone rejected the message";
+    case APP_MSG_NOT_CONNECTED:
+      return "Phone not connected";
+    case APP_MSG_APP_NOT_RUNNING:
+      return "Phone app not running";
+    case APP_MSG_BUSY:
+      return "Previous send still pending";
+    case APP_MSG_BUFFER_OVERFLOW:
+      return "Message too large";
+    default:
+      snprintf(buf, sizeof(buf), "AppMessage error %d", (int) result);
+      return buf;
+  }
+}
+
 static void prv_send_transcript(void) {
   prv_show_status("Sending...");
 
   DictionaryIterator *out;
-  if (app_message_outbox_begin(&out) != APP_MSG_OK) {
-    prv_show_status("Phone unreachable");
-    prv_exit_after(EXIT_DELAY_MS);
+  AppMessageResult result = app_message_outbox_begin(&out);
+  if (result != APP_MSG_OK) {
+    prv_fail(prv_app_message_text(result));
     return;
   }
-  dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript);
-  if (app_message_outbox_send() != APP_MSG_OK) {
-    prv_show_status("Phone unreachable");
-    prv_exit_after(EXIT_DELAY_MS);
+  if (dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript) != DICT_OK) {
+    prv_fail("Transcript too large for outbox");
+    return;
+  }
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    prv_fail(prv_app_message_text(result));
   }
 }
 
@@ -172,11 +205,10 @@ static void prv_show_review(void) {
   }
 }
 
+static void prv_start_dictation(void);
+
 static void prv_retake(void) {
-  prv_show_status("Listening...");
-#if defined(PBL_MICROPHONE)
-  dictation_session_start(s_dictation);
-#endif
+  prv_start_dictation();
 }
 
 // Step scrolling, no animation: one text line on rectangular screens, one
@@ -245,24 +277,52 @@ static void prv_click_config(void *context) {
 // --- Dictation and AppMessage ------------------------------------------------
 
 #if defined(PBL_MICROPHONE)
+// One message per firmware status, so a report from the field pins down
+// which step failed. System error dialogs are off, so the first error ends
+// the session instead of the firmware's own retry loop.
 static const char *prv_dictation_failure_text(DictationSessionStatus status) {
+  static char buf[32];
   switch (status) {
-    case DictationSessionStatusFailureNoSpeechDetected:
-      return "No speech detected";
-    case DictationSessionStatusFailureConnectivityError:
-      return "Phone unreachable";
-    case DictationSessionStatusFailureDisabled:
-      return "Dictation disabled";
+    case DictationSessionStatusFailureTranscriptionRejectedWithError:
+      return "Dictation: exited after error";
     case DictationSessionStatusFailureSystemAborted:
-      return "Aborted";
+      return "Dictation: phone voice session failed";
+    case DictationSessionStatusFailureConnectivityError:
+      return "Dictation: no phone or internet";
+    case DictationSessionStatusFailureDisabled:
+      return "Dictation disabled for this account";
+    case DictationSessionStatusFailureInternalError:
+      return "Dictation: internal error";
+    case DictationSessionStatusFailureRecognizerError:
+      return "Dictation: recognizer failed";
     default:
-      return "Dictation error";
+      snprintf(buf, sizeof(buf), "Dictation status %d", (int) status);
+      return buf;
   }
+}
+
+static bool prv_is_blank(const char *text) {
+  for (; text && *text; text++) {
+    if (*text != ' ' && *text != '\n' && *text != '\t') {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Nothing to send is not a failure: no vibe, a brief note, then exit.
+static void prv_no_speech(void) {
+  prv_show_status("No speech detected");
+  prv_exit_after(EXIT_DELAY_MS);
 }
 
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
                                    char *transcription, void *context) {
   if (status == DictationSessionStatusSuccess) {
+    if (prv_is_blank(transcription)) {
+      prv_no_speech();
+      return;
+    }
     strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
     s_transcript[TRANSCRIPT_MAX - 1] = '\0';
     if (s_review_delay_s == 0 && !s_phone_launched) {
@@ -272,15 +332,38 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     }
     return;
   }
-  if (status == DictationSessionStatusFailureTranscriptionRejected && !s_phone_launched) {
-    // The user backed out; nothing to report.
-    window_stack_pop_all(false);
+  if (status == DictationSessionStatusFailureNoSpeechDetected) {
+    prv_no_speech();
     return;
   }
-  prv_show_status(prv_dictation_failure_text(status));
-  prv_exit_after(EXIT_DELAY_MS);
+  if (status == DictationSessionStatusFailureTranscriptionRejected) {
+    // The user backed out; nothing to report. Stay up only so a phone
+    // launch does not close the settings page.
+    if (s_phone_launched) {
+      prv_show_status("Dictation cancelled");
+    } else {
+      window_stack_pop_all(false);
+    }
+    return;
+  }
+  prv_fail(prv_dictation_failure_text(status));
 }
 #endif
+
+// Shows our placeholder, then asks the firmware to push its voice screen on
+// top. If that refuses (Bluetooth down at this instant), no callback ever
+// comes, so the refusal is reported here rather than left as "Listening...".
+static void prv_start_dictation(void) {
+  prv_show_status("Listening...");
+#if defined(PBL_MICROPHONE)
+  DictationSessionStatus status = dictation_session_start(s_dictation);
+  if (status != DictationSessionStatusSuccess) {
+    char text[STATUS_MAX];
+    snprintf(text, sizeof(text), "Can't start. %s", prv_dictation_failure_text(status));
+    prv_fail(text);
+  }
+#endif
+}
 
 // The companion app Acks once the transcript is durably queued on the phone.
 // On success there is nothing left to say, so the app exits at once; a short
@@ -291,9 +374,7 @@ static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
-  vibes_double_pulse();
-  prv_show_status("Send failed");
-  prv_exit_after(EXIT_DELAY_MS);
+  prv_fail(prv_app_message_text(reason));
 }
 
 // --- Settings ----------------------------------------------------------------
@@ -335,10 +416,13 @@ static void prv_window_load(Window *window) {
   GFont font = prv_content_font();
   s_line_height = prv_measure_line_height(font);
 
-  // Two lines of status text, centered on screen.
-  int16_t status_h = s_line_height * 5 / 2;
+  // Up to four lines of status text, centered on screen; failure messages
+  // can run long. Round screens inset further so the outer lines fit.
+  int16_t status_h = s_line_height * 4;
+  int16_t status_inset = PBL_IF_ROUND_ELSE(18, 4);
   s_status_layer = text_layer_create(
-      GRect(4, (bounds.size.h - status_h) / 2, bounds.size.w - 8, status_h));
+      GRect(status_inset, (bounds.size.h - status_h) / 2,
+            bounds.size.w - 2 * status_inset, status_h));
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
   text_layer_set_font(s_status_layer, font);
   text_layer_set_background_color(s_status_layer, GColorClear);
@@ -373,7 +457,6 @@ static void prv_window_load(Window *window) {
   layer_set_hidden(s_bar_layer, true);
   layer_add_child(root, s_bar_layer);
 
-  prv_show_status("Listening...");
 }
 
 static void prv_window_unload(Window *window) {
@@ -406,14 +489,16 @@ static void prv_init(void) {
     // Our review screen replaces the system's confirmation and error dialogs.
     dictation_session_enable_confirmation(s_dictation, false);
     dictation_session_enable_error_dialogs(s_dictation, false);
-    dictation_session_start(s_dictation);
+    prv_start_dictation();
+  } else if (!connection_service_peek_pebble_app_connection()) {
+    // The firmware refuses to create a session unless a phone app that
+    // supports app dictation is connected; this is the common reason.
+    prv_fail("Phone not connected");
   } else {
-    prv_show_status("No microphone");
-    prv_exit_after(EXIT_DELAY_MS);
+    prv_fail("Dictation unavailable: phone app lacks voice support, or out of memory");
   }
 #else
-  prv_show_status("No microphone");
-  prv_exit_after(EXIT_DELAY_MS);
+  prv_fail("This watch has no microphone");
 #endif
 }
 
