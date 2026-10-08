@@ -29,6 +29,9 @@ static TextLayer *s_status_layer;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
 static Layer *s_bar_layer;
+// Button hints drawn at the screen edges, next to the buttons they describe.
+static Layer *s_hints_layer;
+static bool s_hint_buttons;
 
 static char s_status_text[STATUS_MAX];
 static char s_transcript[TRANSCRIPT_MAX];
@@ -110,6 +113,8 @@ static void prv_cancel_dismiss(void) {
 
 static void prv_show_status(const char *text) {
   prv_cancel_dismiss();
+  s_hint_buttons = false;
+  layer_set_hidden(s_hints_layer, true);
   s_reviewing = false;
   s_auto_sending = false;
   s_sent = false;
@@ -167,6 +172,8 @@ static void prv_send_transcript(bool linger) {
     s_reviewing = false;
     s_auto_sending = true;
     s_sent_touched = false;
+    s_hint_buttons = false;
+    layer_mark_dirty(s_hints_layer);
     prv_show_footer("Sending...");
   } else {
     prv_show_status("Sending...");
@@ -221,9 +228,13 @@ static void prv_bar_tick(void *context) {
   s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
 }
 
-// Any interaction cancels the auto-send; the bar disappears.
+// Any interaction cancels the auto-send; the bar becomes a "Not sent" footer.
 static void prv_pause_review(void) {
+  if (s_footer_text) {
+    return;
+  }
   prv_stop_bar();
+  prv_show_footer("Not sent");
 }
 
 static void prv_show_review(void) {
@@ -253,10 +264,13 @@ static void prv_show_review(void) {
   s_footer_text = NULL;
 
   s_bar_elapsed_ms = 0;
+  s_hint_buttons = true;
+  layer_set_hidden(s_hints_layer, false);
+  layer_mark_dirty(s_hints_layer);
   if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
     // Launched from the phone, or the user asked to always review: never
     // send without an explicit Select.
-    layer_set_hidden(s_bar_layer, true);
+    prv_show_footer("Not sent");
   } else {
     layer_set_hidden(s_bar_layer, false);
     layer_mark_dirty(s_bar_layer);
@@ -272,7 +286,7 @@ static void prv_retake(void) {
 
 // Step scrolling, no animation: one text line on rectangular screens, one
 // page on round ones (where the text is laid out per page).
-static void prv_scroll_by(int16_t dy) {
+static int16_t prv_scroll_min_y(void) {
   GRect frame = layer_get_frame(scroll_layer_get_layer(s_scroll_layer));
   GSize content = scroll_layer_get_content_size(s_scroll_layer);
 #if defined(PBL_ROUND)
@@ -284,6 +298,11 @@ static void prv_scroll_by(int16_t dy) {
     min_y = 0;
   }
 #endif
+  return min_y;
+}
+
+static void prv_scroll_by(int16_t dy) {
+  int16_t min_y = prv_scroll_min_y();
   GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
   offset.y -= dy;
   if (offset.y < min_y) {
@@ -293,6 +312,47 @@ static void prv_scroll_by(int16_t dy) {
     offset.y = 0;
   }
   scroll_layer_set_content_offset(s_scroll_layer, offset, false);
+  layer_mark_dirty(s_hints_layer);
+}
+
+// Small solid triangle with its tip at (x, y), pointing dx/dy (one of them 0).
+static void prv_fill_triangle(GContext *ctx, int16_t x, int16_t y, int16_t dx, int16_t dy) {
+  const int16_t len = 5;
+  for (int16_t i = 0; i < len; i++) {
+    if (dx) {
+      int16_t cx = x - dx * i;
+      graphics_draw_line(ctx, GPoint(cx, y - i), GPoint(cx, y + i));
+    } else {
+      int16_t cy = y - dy * i;
+      graphics_draw_line(ctx, GPoint(x - i, cy), GPoint(x + i, cy));
+    }
+  }
+}
+
+// Back records again (a record dot), Select sends or closes (a play-style
+// triangle), and Up/Down arrows appear only when there is more text that way.
+static void prv_hints_update(Layer *layer, GContext *ctx) {
+  GRect b = layer_get_bounds(layer);
+  int16_t w = b.size.w;
+  int16_t h = b.size.h;
+  int16_t up_y = PBL_IF_ROUND_ELSE(50, h / 6);
+  int16_t down_y = PBL_IF_ROUND_ELSE(h - 50, h * 5 / 6 - 8);
+  int16_t edge_x = PBL_IF_ROUND_ELSE(w - 14, w - 3);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+
+  if (s_hint_buttons) {
+    graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
+    graphics_fill_circle(ctx, GPoint(PBL_IF_ROUND_ELSE(16, 5), up_y), 3);
+    prv_fill_triangle(ctx, PBL_IF_ROUND_ELSE(w - 4, w - 2), h / 2, 1, 0);
+  }
+
+  int16_t offset_y = scroll_layer_get_content_offset(s_scroll_layer).y;
+  if (offset_y < 0) {
+    prv_fill_triangle(ctx, edge_x, up_y - 3, 0, -1);
+  }
+  if (offset_y > prv_scroll_min_y()) {
+    prv_fill_triangle(ctx, edge_x, down_y + 3, 0, 1);
+  }
 }
 
 static int16_t prv_scroll_step(void) {
@@ -452,6 +512,8 @@ static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   if (s_auto_sending) {
     s_auto_sending = false;
     s_sent = true;
+    s_hint_buttons = true;
+    layer_mark_dirty(s_hints_layer);
     prv_show_footer("Sent");
     if (!s_sent_touched) {
       s_dismiss_timer = app_timer_register(SENT_DISMISS_MS, prv_exit_callback, NULL);
@@ -524,7 +586,7 @@ static void prv_window_load(Window *window) {
   text_layer_set_background_color(s_status_layer, GColorClear);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
 
-  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 4)));
+  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 11)));
   s_scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
   window_set_click_config_provider(window, prv_click_config);
@@ -540,7 +602,7 @@ static void prv_window_load(Window *window) {
 #if defined(PBL_ROUND)
   // Text flow needs the layer to be in the window hierarchy already.
   scroll_layer_set_paging(s_scroll_layer, true);
-  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 8);
+  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 14);
 #endif
 
   // On round screens the very bottom is too narrow, so the bar sits on a
@@ -553,11 +615,17 @@ static void prv_window_load(Window *window) {
   layer_set_hidden(s_bar_layer, true);
   layer_add_child(root, s_bar_layer);
 
+  s_hints_layer = layer_create(bounds);
+  layer_set_update_proc(s_hints_layer, prv_hints_update);
+  layer_set_hidden(s_hints_layer, true);
+  layer_add_child(root, s_hints_layer);
+
 }
 
 static void prv_window_unload(Window *window) {
   prv_cancel_dismiss();
   prv_stop_bar();
+  layer_destroy(s_hints_layer);
   layer_destroy(s_bar_layer);
   text_layer_destroy(s_transcript_layer);
   scroll_layer_destroy(s_scroll_layer);
