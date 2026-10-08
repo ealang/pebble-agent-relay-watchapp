@@ -2,15 +2,19 @@ var Clay = require('@rebble/clay');
 var clayConfig = require('./config.json');
 
 // Events are handled here rather than by Clay so the select's string value
-// reaches the watch as a number.
+// and the toggle's boolean reach the watch as numbers.
 var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
-function sendReviewDelay(value) {
-  var seconds = parseInt(value, 10);
+function sendSettings(settings) {
+  var seconds = parseInt(settings.REVIEW_DELAY, 10);
   if (isNaN(seconds)) {
     seconds = 2;
   }
-  Pebble.sendAppMessage({ REVIEW_DELAY: seconds });
+  var message = { REVIEW_DELAY: seconds };
+  if (settings.SENT_SCREEN !== undefined) {
+    message.SENT_SCREEN = settings.SENT_SCREEN ? 1 : 0;
+  }
+  Pebble.sendAppMessage(message);
 }
 
 Pebble.addEventListener('showConfiguration', function () {
@@ -23,7 +27,7 @@ Pebble.addEventListener('webviewclosed', function (e) {
   }
   // getSettings also stores the values for generateUrl and for the next launch.
   var settings = clay.getSettings(e.response);
-  sendReviewDelay(settings.REVIEW_DELAY);
+  sendSettings(settings);
 });
 
 // Also push the stored setting at every launch, so a save that happened
@@ -36,7 +40,7 @@ Pebble.addEventListener('ready', function () {
   } catch (err) {
     settings = {};
   }
-  if (settings.REVIEW_DELAY !== undefined) {
-    sendReviewDelay(settings.REVIEW_DELAY);
+  if (settings.REVIEW_DELAY !== undefined || settings.SENT_SCREEN !== undefined) {
+    sendSettings(settings);
   }
 });

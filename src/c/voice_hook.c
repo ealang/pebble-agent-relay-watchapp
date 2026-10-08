@@ -15,8 +15,10 @@
 #define PERSIST_KEY_LEGACY_CONFIRMATION 1
 #define PERSIST_KEY_LEGACY_ERROR_DIALOGS 2
 #define PERSIST_KEY_REVIEW_DELAY 3
+#define PERSIST_KEY_SENT_SCREEN 4
+#define SENT_DISMISS_MS 30000
 #define BAR_TICK_MS 50
-#define BAR_HEIGHT 4
+#define BAR_HEIGHT 20
 // Height of the box the transcript is measured in; comfortably more than
 // TRANSCRIPT_MAX characters can fill at the largest font on the narrowest screen.
 #define TEXT_MAX_HEIGHT 4000
@@ -42,6 +44,17 @@ static AppTimer *s_bar_timer;
 static uint32_t s_bar_elapsed_ms;
 static bool s_reviewing;
 static bool s_phone_launched;
+// The countdown ran out and sent on its own: keep the transcript up, with the
+// bar region turned into a "Sending..."/"Sent" footer, until Select or Back.
+static bool s_auto_sending;
+static bool s_sent;
+static const char *s_footer_text;
+// Whether an unconfirmed send (countdown ran out, or no review at all) leaves
+// the transcript up. Set from the phone's settings page.
+static bool s_sent_screen_enabled = true;
+// Any scroll on the sending/sent screen keeps it up past SENT_DISMISS_MS.
+static bool s_sent_touched;
+static AppTimer *s_dismiss_timer;
 
 #if defined(PBL_MICROPHONE)
 static DictationSession *s_dictation;
@@ -83,12 +96,23 @@ static void prv_stop_bar(void) {
     app_timer_cancel(s_bar_timer);
     s_bar_timer = NULL;
   }
+  s_footer_text = NULL;
   layer_set_hidden(s_bar_layer, true);
 }
 
 // Status text is unquoted; only dictated speech is shown in quotes.
+static void prv_cancel_dismiss(void) {
+  if (s_dismiss_timer) {
+    app_timer_cancel(s_dismiss_timer);
+    s_dismiss_timer = NULL;
+  }
+}
+
 static void prv_show_status(const char *text) {
+  prv_cancel_dismiss();
   s_reviewing = false;
+  s_auto_sending = false;
+  s_sent = false;
   prv_stop_bar();
   strncpy(s_status_text, text, STATUS_MAX - 1);
   s_status_text[STATUS_MAX - 1] = '\0';
@@ -127,8 +151,26 @@ static const char *prv_app_message_text(AppMessageResult result) {
   }
 }
 
-static void prv_send_transcript(void) {
-  prv_show_status("Sending...");
+static void prv_show_footer(const char *text) {
+  s_footer_text = text;
+  layer_set_hidden(s_bar_layer, false);
+  layer_mark_dirty(s_bar_layer);
+}
+
+// An auto-send keeps the transcript on screen; any other send shows a status.
+static void prv_send_transcript(bool linger) {
+  if (linger) {
+    if (s_bar_timer) {
+      app_timer_cancel(s_bar_timer);
+      s_bar_timer = NULL;
+    }
+    s_reviewing = false;
+    s_auto_sending = true;
+    s_sent_touched = false;
+    prv_show_footer("Sending...");
+  } else {
+    prv_show_status("Sending...");
+  }
 
   DictionaryIterator *out;
   AppMessageResult result = app_message_outbox_begin(&out);
@@ -150,8 +192,21 @@ static void prv_send_transcript(void) {
 
 static void prv_bar_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  int16_t width = bounds.size.w * s_bar_elapsed_ms / (s_review_delay_s * 1000);
   graphics_context_set_fill_color(ctx, GColorBlack);
+  if (s_footer_text) {
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, s_footer_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(0, 1, bounds.size.w, bounds.size.h), GTextOverflowModeFill,
+                       GTextAlignmentCenter, NULL);
+    return;
+  }
+  int16_t width = s_review_delay_s ? bounds.size.w * s_bar_elapsed_ms / (s_review_delay_s * 1000) : 0;
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_draw_rect(ctx, bounds);
   graphics_fill_rect(ctx, GRect(0, 0, width, bounds.size.h), 0, GCornerNone);
 }
 
@@ -159,7 +214,7 @@ static void prv_bar_tick(void *context) {
   s_bar_elapsed_ms += BAR_TICK_MS;
   if (s_bar_elapsed_ms >= s_review_delay_s * 1000) {
     s_bar_timer = NULL;
-    prv_send_transcript();
+    prv_send_transcript(s_sent_screen_enabled);
     return;
   }
   layer_mark_dirty(s_bar_layer);
@@ -186,12 +241,16 @@ static void prv_show_review(void) {
   text_layer_set_size(s_transcript_layer, content);
   // Leave room under the text so the bar never covers the last line.
   scroll_layer_set_content_size(s_scroll_layer,
-      GSize(content.w, frame.origin.y + content.h + PBL_IF_ROUND_ELSE(30, BAR_HEIGHT * 3)));
+      GSize(content.w, frame.origin.y + content.h + PBL_IF_ROUND_ELSE(40, BAR_HEIGHT + 4)));
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
 
   layer_set_hidden(text_layer_get_layer(s_status_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false);
+  prv_cancel_dismiss();
   s_reviewing = true;
+  s_auto_sending = false;
+  s_sent = false;
+  s_footer_text = NULL;
 
   s_bar_elapsed_ms = 0;
   if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
@@ -242,25 +301,40 @@ static int16_t prv_scroll_step(void) {
 }
 
 static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
-  prv_pause_review();
+  if (s_reviewing) {
+    prv_pause_review();
+  } else if (s_auto_sending || s_sent) {
+    s_sent_touched = true;
+    prv_cancel_dismiss();
+  }
   prv_scroll_by(-prv_scroll_step());
 }
 
 static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
-  prv_pause_review();
+  if (s_reviewing) {
+    prv_pause_review();
+  } else if (s_auto_sending || s_sent) {
+    s_sent_touched = true;
+    prv_cancel_dismiss();
+  }
   prv_scroll_by(prv_scroll_step());
 }
 
 // Select sends right away, whether or not the countdown is still running.
+// On the sent screen it just dismisses: the message is already gone.
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
+  if (s_sent) {
+    window_stack_pop_all(false);
+    return;
+  }
   if (!s_reviewing) {
     return;
   }
-  prv_send_transcript();
+  prv_send_transcript(false);
 }
 
 static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_reviewing) {
+  if (s_reviewing || s_sent) {
     prv_retake();
   } else {
     window_stack_pop_all(true);
@@ -326,7 +400,12 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
     s_transcript[TRANSCRIPT_MAX - 1] = '\0';
     if (s_review_delay_s == 0 && !s_phone_launched) {
-      prv_send_transcript();
+      if (s_sent_screen_enabled) {
+        prv_show_review();
+        prv_send_transcript(true);
+      } else {
+        prv_send_transcript(false);
+      }
     } else {
       prv_show_review();
     }
@@ -370,6 +449,15 @@ static void prv_start_dictation(void) {
 // vibe confirms it without looking. Only failures linger on screen.
 static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   vibes_short_pulse();
+  if (s_auto_sending) {
+    s_auto_sending = false;
+    s_sent = true;
+    prv_show_footer("Sent");
+    if (!s_sent_touched) {
+      s_dismiss_timer = app_timer_register(SENT_DISMISS_MS, prv_exit_callback, NULL);
+    }
+    return;
+  }
   window_stack_pop_all(false);
 }
 
@@ -386,6 +474,9 @@ static bool prv_review_delay_is_valid(int32_t seconds) {
 static void prv_load_review_delay(void) {
   persist_delete(PERSIST_KEY_LEGACY_CONFIRMATION);
   persist_delete(PERSIST_KEY_LEGACY_ERROR_DIALOGS);
+  if (persist_exists(PERSIST_KEY_SENT_SCREEN)) {
+    s_sent_screen_enabled = persist_read_bool(PERSIST_KEY_SENT_SCREEN);
+  }
   if (persist_exists(PERSIST_KEY_REVIEW_DELAY)) {
     int32_t stored = persist_read_int(PERSIST_KEY_REVIEW_DELAY);
     if (prv_review_delay_is_valid(stored)) {
@@ -396,6 +487,11 @@ static void prv_load_review_delay(void) {
 
 // The phone pushes the setting at every launch and whenever it is saved.
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
+  Tuple *sent_screen = dict_find(iter, MESSAGE_KEY_SENT_SCREEN);
+  if (sent_screen) {
+    s_sent_screen_enabled = sent_screen->value->int32 != 0;
+    persist_write_bool(PERSIST_KEY_SENT_SCREEN, s_sent_screen_enabled);
+  }
   Tuple *tuple = dict_find(iter, MESSAGE_KEY_REVIEW_DELAY);
   if (!tuple) {
     return;
@@ -450,7 +546,7 @@ static void prv_window_load(Window *window) {
   // On round screens the very bottom is too narrow, so the bar sits on a
   // wider chord a little higher up.
   GRect bar_frame = PBL_IF_ROUND_ELSE(
-      GRect(34, bounds.size.h - 18, bounds.size.w - 68, BAR_HEIGHT),
+      GRect(45, bounds.size.h - 32, bounds.size.w - 90, BAR_HEIGHT),
       GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT));
   s_bar_layer = layer_create(bar_frame);
   layer_set_update_proc(s_bar_layer, prv_bar_update);
@@ -460,6 +556,7 @@ static void prv_window_load(Window *window) {
 }
 
 static void prv_window_unload(Window *window) {
+  prv_cancel_dismiss();
   prv_stop_bar();
   layer_destroy(s_bar_layer);
   text_layer_destroy(s_transcript_layer);
