@@ -64,15 +64,18 @@ static AppTimer *s_dismiss_timer;
 static DictationSession *s_dictation;
 #endif
 
-// Follow the watch's Text Size setting so our text matches the system UI.
+// The firmware's body text font for the watch's Text Size setting, as used
+// by notifications and its own dictation screen (TextStyleFont_Body). Medium
+// is bold there too. Extra Large uses Gothic 36, which apps cannot load, so
+// it falls back to the Large font.
 static GFont prv_content_font(void) {
   switch (preferred_content_size()) {
     case PreferredContentSizeSmall:
-      return fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+      return fonts_get_system_font(FONT_KEY_GOTHIC_18);
     case PreferredContentSizeMedium:
       return fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
     default:
-      return fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+      return fonts_get_system_font(FONT_KEY_GOTHIC_28);
   }
 }
 
