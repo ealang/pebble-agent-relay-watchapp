@@ -22,7 +22,6 @@
 // Height of the box the transcript is measured in; comfortably more than
 // TRANSCRIPT_MAX characters can fill at the largest font on the narrowest screen.
 #define TEXT_MAX_HEIGHT 4000
-#define EXIT_DELAY_MS 2000
 
 static Window *s_window;
 static TextLayer *s_status_layer;
@@ -51,6 +50,8 @@ static bool s_phone_launched;
 // bar region turned into a "Sending..."/"Sent" footer, until Select or Back.
 static bool s_auto_sending;
 static bool s_sent;
+// Dictation heard nothing: the review screen shows a placeholder, no footer.
+static bool s_no_speech;
 static const char *s_footer_text;
 // Whether an unconfirmed send (countdown ran out, or no review at all) leaves
 // the transcript up. Set from the phone's settings page.
@@ -84,16 +85,6 @@ static void prv_exit_callback(void *context) {
   window_stack_pop_all(false);
 }
 
-// Leaves a failure on screen briefly, then exits. When the phone launched
-// the app (install, "Start app", or the settings page) exiting would also
-// close the settings page, so the message stays until the user presses Back.
-static void prv_exit_after(uint32_t ms) {
-  if (s_phone_launched) {
-    return;
-  }
-  app_timer_register(ms, prv_exit_callback, NULL);
-}
-
 static void prv_stop_bar(void) {
   if (s_bar_timer) {
     app_timer_cancel(s_bar_timer);
@@ -113,6 +104,7 @@ static void prv_cancel_dismiss(void) {
 
 static void prv_show_status(const char *text) {
   prv_cancel_dismiss();
+  s_no_speech = false;
   s_hint_buttons = false;
   layer_set_hidden(s_hints_layer, true);
   s_reviewing = false;
@@ -237,9 +229,9 @@ static void prv_pause_review(void) {
   prv_show_footer("Not sent");
 }
 
-static void prv_show_review(void) {
-  snprintf(s_quoted, sizeof(s_quoted), "“%s”", s_transcript);
-  text_layer_set_text(s_transcript_layer, s_quoted);
+// Lays out text in the scrollable review area and shows it with button hints.
+static void prv_show_text(const char *text) {
+  text_layer_set_text(s_transcript_layer, text);
 
   // The firmware measures text within the layer's current bounds, so grow the
   // layer back to its full measuring height first; otherwise a retake that is
@@ -258,15 +250,21 @@ static void prv_show_review(void) {
   layer_set_hidden(text_layer_get_layer(s_status_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false);
   prv_cancel_dismiss();
+  s_hint_buttons = true;
+  layer_set_hidden(s_hints_layer, false);
+  layer_mark_dirty(s_hints_layer);
+}
+
+static void prv_show_review(void) {
+  snprintf(s_quoted, sizeof(s_quoted), "“%s”", s_transcript);
+  prv_show_text(s_quoted);
+  s_no_speech = false;
   s_reviewing = true;
   s_auto_sending = false;
   s_sent = false;
   s_footer_text = NULL;
 
   s_bar_elapsed_ms = 0;
-  s_hint_buttons = true;
-  layer_set_hidden(s_hints_layer, false);
-  layer_mark_dirty(s_hints_layer);
   if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
     // Launched from the phone, or the user asked to always review: never
     // send without an explicit Select.
@@ -380,10 +378,14 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
   prv_scroll_by(prv_scroll_step());
 }
 
-// Select sends right away, whether or not the countdown is still running.
-// On the sent screen it just dismisses: the message is already gone.
+// Select pauses a running countdown like Up and Down; on a paused review it
+// sends. On the sent and no-speech screens it just closes the app.
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_sent) {
+  if (s_bar_timer) {
+    prv_pause_review();
+    return;
+  }
+  if (s_sent || s_no_speech) {
     window_stack_pop_all(false);
     return;
   }
@@ -394,7 +396,7 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_reviewing || s_sent) {
+  if (s_reviewing || s_sent || s_no_speech) {
     prv_retake();
   } else {
     window_stack_pop_all(true);
@@ -444,10 +446,15 @@ static bool prv_is_blank(const char *text) {
   return true;
 }
 
-// Nothing to send is not a failure: no vibe, a brief note, then exit.
+// Nothing to send is not a failure: no vibe, and the review screen without a
+// footer, so Back records again and Select closes.
 static void prv_no_speech(void) {
-  prv_show_status("No speech detected");
-  prv_exit_after(EXIT_DELAY_MS);
+  prv_stop_bar();
+  s_reviewing = false;
+  s_auto_sending = false;
+  s_sent = false;
+  prv_show_text("[No speech detected]");
+  s_no_speech = true;
 }
 
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
