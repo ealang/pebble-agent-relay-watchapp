@@ -40,7 +40,11 @@
       }
     },
     "resources": {
-      "media": []
+      "media": [
+        { "type": "bitmap", "name": "ICON_CHECK", "file": "images/icon_check.png" },
+        { "type": "bitmap", "name": "ICON_UP", "file": "images/icon_up.png" },
+        { "type": "bitmap", "name": "ICON_DOWN", "file": "images/icon_down.png" }
+      ]
     },
     "enableMultiJS": true,
     "capabilities": [

@@ -29,8 +29,11 @@ static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
 static Layer *s_bar_layer;
 // Button hints drawn at the screen edges, next to the buttons they describe.
+// The icons are the firmware's own action bar icons, as on its dictation review.
 static Layer *s_hints_layer;
-static bool s_hint_buttons;
+static GBitmap *s_icon_check;
+static GBitmap *s_icon_up;
+static GBitmap *s_icon_down;
 
 static char s_status_text[STATUS_MAX];
 static char s_transcript[TRANSCRIPT_MAX];
@@ -108,7 +111,6 @@ static void prv_cancel_dismiss(void) {
 static void prv_show_status(const char *text) {
   prv_cancel_dismiss();
   s_no_speech = false;
-  s_hint_buttons = false;
   layer_set_hidden(s_hints_layer, true);
   s_reviewing = false;
   s_auto_sending = false;
@@ -167,7 +169,6 @@ static void prv_send_transcript(bool linger) {
     s_reviewing = false;
     s_auto_sending = true;
     s_sent_touched = false;
-    s_hint_buttons = false;
     layer_mark_dirty(s_hints_layer);
     prv_show_footer("Sending...");
   } else {
@@ -223,13 +224,13 @@ static void prv_bar_tick(void *context) {
   s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
 }
 
-// Any interaction cancels the auto-send; the bar becomes a "Not sent" footer.
+// Any interaction cancels the auto-send; the bar becomes a "Not yet sent" footer.
 static void prv_pause_review(void) {
   if (s_footer_text) {
     return;
   }
   prv_stop_bar();
-  prv_show_footer("Not sent");
+  prv_show_footer("Not yet sent");
   layer_mark_dirty(s_hints_layer);
 }
 
@@ -254,7 +255,6 @@ static void prv_show_text(const char *text) {
   layer_set_hidden(text_layer_get_layer(s_status_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false);
   prv_cancel_dismiss();
-  s_hint_buttons = true;
   layer_set_hidden(s_hints_layer, false);
   layer_mark_dirty(s_hints_layer);
 }
@@ -272,7 +272,7 @@ static void prv_show_review(void) {
   if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
     // Launched from the phone, or the user asked to always review: never
     // send without an explicit Select.
-    prv_show_footer("Not sent");
+    prv_show_footer("Not yet sent");
   } else {
     layer_set_hidden(s_bar_layer, false);
     layer_mark_dirty(s_bar_layer);
@@ -317,46 +317,34 @@ static void prv_scroll_by(int16_t dy) {
   layer_mark_dirty(s_hints_layer);
 }
 
-// Solid triangle with its tip at (x, y), pointing dx/dy (one of them 0).
-static void prv_fill_triangle(GContext *ctx, int16_t x, int16_t y, int16_t dx, int16_t dy,
-                              int16_t len) {
-  for (int16_t i = 0; i < len; i++) {
-    if (dx) {
-      int16_t cx = x - dx * i;
-      graphics_draw_line(ctx, GPoint(cx, y - i), GPoint(cx, y + i));
-    } else {
-      int16_t cy = y - dy * i;
-      graphics_draw_line(ctx, GPoint(x - i, cy), GPoint(x + i, cy));
-    }
-  }
+static void prv_draw_icon(GContext *ctx, GBitmap *icon, int16_t right_x, int16_t center_y) {
+  GSize size = gbitmap_get_bounds(icon).size;
+  graphics_draw_bitmap_in_rect(ctx, icon,
+      GRect(right_x - size.w, center_y - size.h / 2, size.w, size.h));
 }
 
-// Back records again (a record dot). The triangle by Select appears only when
-// Select would send: a paused or manual review, not the countdown or after a
-// send. Up/Down arrows appear only when there is more text that way.
+// The check by Select appears only when Select would send: a paused or manual
+// review, not the countdown or after a send. Up/Down arrows appear only when
+// there is more text that way.
 static void prv_hints_update(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
   int16_t w = b.size.w;
   int16_t h = b.size.h;
   int16_t up_y = PBL_IF_ROUND_ELSE(50, h / 6);
   int16_t down_y = PBL_IF_ROUND_ELSE(h - 50, h * 5 / 6 - 8);
-  int16_t edge_x = PBL_IF_ROUND_ELSE(w - 20, w - 8);
-  graphics_context_set_stroke_color(ctx, GColorBlack);
+  int16_t edge_x = PBL_IF_ROUND_ELSE(w - 14, w - 3);
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
-  if (s_hint_buttons) {
-    graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
-    graphics_fill_circle(ctx, GPoint(PBL_IF_ROUND_ELSE(18, 7), up_y), 5);
-  }
   if (s_reviewing && !s_bar_timer) {
-    prv_fill_triangle(ctx, PBL_IF_ROUND_ELSE(w - 4, w - 2), h / 2, 1, 0, 9);
+    prv_draw_icon(ctx, s_icon_check, PBL_IF_ROUND_ELSE(w - 4, w - 1), h / 2);
   }
 
   int16_t offset_y = scroll_layer_get_content_offset(s_scroll_layer).y;
   if (offset_y < 0) {
-    prv_fill_triangle(ctx, edge_x, up_y - 4, 0, -1, 7);
+    prv_draw_icon(ctx, s_icon_up, edge_x, up_y);
   }
   if (offset_y > prv_scroll_min_y()) {
-    prv_fill_triangle(ctx, edge_x, down_y + 4, 0, 1, 7);
+    prv_draw_icon(ctx, s_icon_down, edge_x, down_y);
   }
 }
 
@@ -526,7 +514,6 @@ static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   if (s_auto_sending) {
     s_auto_sending = false;
     s_sent = true;
-    s_hint_buttons = true;
     layer_mark_dirty(s_hints_layer);
     prv_show_footer("Sent");
     if (!s_sent_touched) {
@@ -600,7 +587,8 @@ static void prv_window_load(Window *window) {
   text_layer_set_background_color(s_status_layer, GColorClear);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
 
-  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 15)));
+  // The right side keeps room for the check and scroll arrows.
+  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 19), 0, PBL_IF_ROUND_ELSE(0, 4)));
   s_scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
   window_set_click_config_provider(window, prv_click_config);
@@ -629,6 +617,9 @@ static void prv_window_load(Window *window) {
   layer_set_hidden(s_bar_layer, true);
   layer_add_child(root, s_bar_layer);
 
+  s_icon_check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
+  s_icon_up = gbitmap_create_with_resource(RESOURCE_ID_ICON_UP);
+  s_icon_down = gbitmap_create_with_resource(RESOURCE_ID_ICON_DOWN);
   s_hints_layer = layer_create(bounds);
   layer_set_update_proc(s_hints_layer, prv_hints_update);
   layer_set_hidden(s_hints_layer, true);
@@ -640,6 +631,9 @@ static void prv_window_unload(Window *window) {
   prv_cancel_dismiss();
   prv_stop_bar();
   layer_destroy(s_hints_layer);
+  gbitmap_destroy(s_icon_check);
+  gbitmap_destroy(s_icon_up);
+  gbitmap_destroy(s_icon_down);
   layer_destroy(s_bar_layer);
   text_layer_destroy(s_transcript_layer);
   scroll_layer_destroy(s_scroll_layer);

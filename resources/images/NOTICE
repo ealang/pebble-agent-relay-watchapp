@@ -1,0 +1,4 @@
+icon_check.png, icon_up.png and icon_down.png are the action bar icons from
+PebbleOS (https://github.com/coredevices/PebbleOS), resources/*/base/images/
+action_bar_icon_{check,up,down}.png, licensed under the Apache License 2.0.
+They have been recoloured from white to black for drawing on a white page.
