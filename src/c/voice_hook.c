@@ -352,9 +352,9 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
 
 // Shows our placeholder, then asks the firmware to push its voice screen on
 // top. If that refuses (Bluetooth down at this instant), no callback ever
-// comes, so the refusal is reported here rather than left as "Listening...".
+// comes, so the refusal is reported here rather than left as "Loading...".
 static void prv_start_dictation(void) {
-  prv_show_status("Listening...");
+  prv_show_status("Loading...");
 #if defined(PBL_MICROPHONE)
   DictationSessionStatus status = dictation_session_start(s_dictation);
   if (status != DictationSessionStatusSuccess) {
