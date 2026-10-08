@@ -337,13 +337,8 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     return;
   }
   if (status == DictationSessionStatusFailureTranscriptionRejected) {
-    // The user backed out; nothing to report. Stay up only so a phone
-    // launch does not close the settings page.
-    if (s_phone_launched) {
-      prv_show_status("Dictation cancelled");
-    } else {
-      window_stack_pop_all(false);
-    }
+    // The user backed out; nothing to report.
+    window_stack_pop_all(false);
     return;
   }
   prv_fail(prv_dictation_failure_text(status));
