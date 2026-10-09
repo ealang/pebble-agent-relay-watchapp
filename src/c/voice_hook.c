@@ -287,7 +287,9 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
   graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_context_set_stroke_color(ctx, GColorBlack);
+  // A 2 px outline, so the empty bar stands out against the transcript.
   graphics_draw_rect(ctx, bounds);
+  graphics_draw_rect(ctx, grect_inset(bounds, GEdgeInsets(1)));
   graphics_fill_rect(ctx, GRect(0, 0, width, bounds.size.h), 0, GCornerNone);
 }
 
