@@ -28,9 +28,10 @@ static TextLayer *s_status_layer;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
 static Layer *s_bar_layer;
-// Button hints drawn at the screen edges, next to the buttons they describe.
-// The icons are the firmware's own action bar icons, as on its dictation review.
-static Layer *s_hints_layer;
+// The standard action bar, as on the firmware's dictation review, with that
+// screen's own icons. It shows on every transcript screen; its icons appear
+// only for what the buttons do there.
+static ActionBarLayer *s_action_bar;
 static GBitmap *s_icon_check;
 static GBitmap *s_icon_up;
 static GBitmap *s_icon_down;
@@ -62,6 +63,10 @@ static bool s_sent_screen_enabled = true;
 // Any scroll on the sending/sent screen keeps it up past SENT_DISMISS_MS.
 static bool s_sent_touched;
 static AppTimer *s_dismiss_timer;
+
+// The icons currently on the action bar, so an unchanged icon is not
+// animated in again.
+static const GBitmap *s_bar_icons[NUM_BUTTONS];
 
 #if defined(PBL_MICROPHONE)
 static DictationSession *s_dictation;
@@ -108,10 +113,40 @@ static void prv_cancel_dismiss(void) {
   }
 }
 
+static void prv_set_bar_icon(ButtonId button, const GBitmap *icon) {
+  if (s_bar_icons[button] == icon) {
+    return;
+  }
+  s_bar_icons[button] = icon;
+  if (icon) {
+    action_bar_layer_set_icon_animated(s_action_bar, button, icon, true);
+  } else {
+    action_bar_layer_clear_icon(s_action_bar, button);
+  }
+}
+
+// The check appears only when Select would send: a paused or manual review,
+// not the countdown or after a send. The countdown shows no icons at all,
+// since every button there only stops it. Otherwise Up/Down arrows appear
+// when there is more text that way.
+static void prv_update_action_bar(void) {
+  bool counting = s_bar_timer != NULL;
+  prv_set_bar_icon(BUTTON_ID_SELECT, s_reviewing && !counting ? s_icon_check : NULL);
+  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+  int16_t visible_h = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
+  int16_t content_h = scroll_layer_get_content_size(s_scroll_layer).h;
+  prv_set_bar_icon(BUTTON_ID_UP, !counting && offset.y < 0 ? s_icon_up : NULL);
+  prv_set_bar_icon(BUTTON_ID_DOWN,
+                   !counting && offset.y + content_h > visible_h ? s_icon_down : NULL);
+}
+
+static void prv_scroll_offset_changed(ScrollLayer *scroll_layer, void *context) {
+  prv_update_action_bar();
+}
+
 static void prv_show_status(const char *text) {
   prv_cancel_dismiss();
   s_no_speech = false;
-  layer_set_hidden(s_hints_layer, true);
   s_reviewing = false;
   s_auto_sending = false;
   s_sent = false;
@@ -120,6 +155,7 @@ static void prv_show_status(const char *text) {
   s_status_text[STATUS_MAX - 1] = '\0';
   text_layer_set_text(s_status_layer, s_status_text);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
+  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), true);
   layer_set_hidden(text_layer_get_layer(s_status_layer), false);
 }
 
@@ -169,7 +205,7 @@ static void prv_send_transcript(bool linger) {
     s_reviewing = false;
     s_auto_sending = true;
     s_sent_touched = false;
-    layer_mark_dirty(s_hints_layer);
+    prv_update_action_bar();
     prv_show_footer("Sending...");
   } else {
     prv_show_status("Sending...");
@@ -231,10 +267,10 @@ static void prv_pause_review(void) {
   }
   prv_stop_bar();
   prv_show_footer("Not yet sent");
-  layer_mark_dirty(s_hints_layer);
+  prv_update_action_bar();
 }
 
-// Lays out text in the scrollable review area and shows it with button hints.
+// Lays out text in the scrollable review area and shows it with the action bar.
 static void prv_show_text(const char *text) {
   text_layer_set_text(s_transcript_layer, text);
 
@@ -254,9 +290,8 @@ static void prv_show_text(const char *text) {
 
   layer_set_hidden(text_layer_get_layer(s_status_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false);
+  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), false);
   prv_cancel_dismiss();
-  layer_set_hidden(s_hints_layer, false);
-  layer_mark_dirty(s_hints_layer);
 }
 
 static void prv_show_review(void) {
@@ -278,6 +313,7 @@ static void prv_show_review(void) {
     layer_mark_dirty(s_bar_layer);
     s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
   }
+  prv_update_action_bar();
 }
 
 static void prv_start_dictation(void);
@@ -286,91 +322,26 @@ static void prv_retake(void) {
   prv_start_dictation();
 }
 
-// Step scrolling, no animation: one text line on rectangular screens, one
-// page on round ones (where the text is laid out per page).
-static int16_t prv_scroll_min_y(void) {
-  GRect frame = layer_get_frame(scroll_layer_get_layer(s_scroll_layer));
-  GSize content = scroll_layer_get_content_size(s_scroll_layer);
-#if defined(PBL_ROUND)
-  // Pages must stay aligned, so the last page starts on a page boundary.
-  int16_t min_y = -((content.h - 1) / frame.size.h) * frame.size.h;
-#else
-  int16_t min_y = frame.size.h - content.h;
-  if (min_y > 0) {
-    min_y = 0;
+// Up and Down scroll like the firmware's scrolling screens; during the
+// countdown they only stop it.
+static void prv_scroll_click(ClickRecognizerRef recognizer, ClickHandler scroll) {
+  if (s_bar_timer) {
+    prv_pause_review();
+    return;
   }
-#endif
-  return min_y;
-}
-
-static void prv_scroll_by(int16_t dy) {
-  int16_t min_y = prv_scroll_min_y();
-  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
-  offset.y -= dy;
-  if (offset.y < min_y) {
-    offset.y = min_y;
+  if (s_auto_sending || s_sent) {
+    s_sent_touched = true;
+    prv_cancel_dismiss();
   }
-  if (offset.y > 0) {
-    offset.y = 0;
-  }
-  scroll_layer_set_content_offset(s_scroll_layer, offset, false);
-  layer_mark_dirty(s_hints_layer);
-}
-
-static void prv_draw_icon(GContext *ctx, GBitmap *icon, int16_t right_x, int16_t center_y) {
-  GSize size = gbitmap_get_bounds(icon).size;
-  graphics_draw_bitmap_in_rect(ctx, icon,
-      GRect(right_x - size.w, center_y - size.h / 2, size.w, size.h));
-}
-
-// The check by Select appears only when Select would send: a paused or manual
-// review, not the countdown or after a send. Up/Down arrows appear only when
-// there is more text that way.
-static void prv_hints_update(Layer *layer, GContext *ctx) {
-  GRect b = layer_get_bounds(layer);
-  int16_t w = b.size.w;
-  int16_t h = b.size.h;
-  int16_t up_y = PBL_IF_ROUND_ELSE(50, h / 6);
-  int16_t down_y = PBL_IF_ROUND_ELSE(h - 50, h * 5 / 6 - 8);
-  int16_t edge_x = PBL_IF_ROUND_ELSE(w - 14, w - 3);
-  graphics_context_set_compositing_mode(ctx, GCompOpSet);
-
-  if (s_reviewing && !s_bar_timer) {
-    prv_draw_icon(ctx, s_icon_check, PBL_IF_ROUND_ELSE(w - 4, w - 1), h / 2);
-  }
-
-  int16_t offset_y = scroll_layer_get_content_offset(s_scroll_layer).y;
-  if (offset_y < 0) {
-    prv_draw_icon(ctx, s_icon_up, edge_x, up_y);
-  }
-  if (offset_y > prv_scroll_min_y()) {
-    prv_draw_icon(ctx, s_icon_down, edge_x, down_y);
-  }
-}
-
-static int16_t prv_scroll_step(void) {
-  return PBL_IF_ROUND_ELSE(layer_get_frame(scroll_layer_get_layer(s_scroll_layer)).size.h,
-                           s_line_height);
+  scroll(recognizer, s_scroll_layer);
 }
 
 static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_reviewing) {
-    prv_pause_review();
-  } else if (s_auto_sending || s_sent) {
-    s_sent_touched = true;
-    prv_cancel_dismiss();
-  }
-  prv_scroll_by(-prv_scroll_step());
+  prv_scroll_click(recognizer, scroll_layer_scroll_up_click_handler);
 }
 
 static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_reviewing) {
-    prv_pause_review();
-  } else if (s_auto_sending || s_sent) {
-    s_sent_touched = true;
-    prv_cancel_dismiss();
-  }
-  prv_scroll_by(prv_scroll_step());
+  prv_scroll_click(recognizer, scroll_layer_scroll_down_click_handler);
 }
 
 // Select pauses a running countdown like Up and Down; on a paused review it
@@ -399,8 +370,8 @@ static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void prv_click_config(void *context) {
-  window_single_repeating_click_subscribe(BUTTON_ID_UP, 150, prv_up_click);
-  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 150, prv_down_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, 100, prv_up_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, prv_down_click);
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_select_click);
   window_single_click_subscribe(BUTTON_ID_BACK, prv_back_click);
 }
@@ -450,6 +421,7 @@ static void prv_no_speech(void) {
   s_sent = false;
   prv_show_text("[No speech detected]");
   s_no_speech = true;
+  prv_update_action_bar();
 }
 
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
@@ -514,7 +486,6 @@ static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   if (s_auto_sending) {
     s_auto_sending = false;
     s_sent = true;
-    layer_mark_dirty(s_hints_layer);
     prv_show_footer("Sent");
     if (!s_sent_touched) {
       s_dismiss_timer = app_timer_register(SENT_DISMISS_MS, prv_exit_callback, NULL);
@@ -587,31 +558,34 @@ static void prv_window_load(Window *window) {
   text_layer_set_background_color(s_status_layer, GColorClear);
   layer_add_child(root, text_layer_get_layer(s_status_layer));
 
-  // The right side keeps room for the check and scroll arrows.
-  GRect text_bounds = grect_inset(bounds, GEdgeInsets(0, PBL_IF_ROUND_ELSE(0, 19), 0, PBL_IF_ROUND_ELSE(0, 4)));
+  // The transcript sits beside the action bar as on the firmware's dictation
+  // review: a 4 px margin, left-aligned on rectangular screens and
+  // right-aligned against the curved bar on round ones.
+  int16_t text_w = bounds.size.w - 8 - ACTION_BAR_WIDTH - PBL_IF_ROUND_ELSE(10, 0);
   s_scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
-  window_set_click_config_provider(window, prv_click_config);
-  // On round screens, start lower so the first line lands on a wide chord.
-  s_transcript_layer = text_layer_create(
-      GRect(text_bounds.origin.x, PBL_IF_ROUND_ELSE(26, 0), text_bounds.size.w, TEXT_MAX_HEIGHT));
+  scroll_layer_set_callbacks(s_scroll_layer, (ScrollLayerCallbacks) {
+    .content_offset_changed_handler = prv_scroll_offset_changed,
+  });
+  s_transcript_layer = text_layer_create(GRect(4, -6, text_w, TEXT_MAX_HEIGHT));
   text_layer_set_font(s_transcript_layer, font);
   text_layer_set_background_color(s_transcript_layer, GColorClear);
-  text_layer_set_text_alignment(s_transcript_layer, GTextAlignmentCenter);
+  text_layer_set_text_alignment(s_transcript_layer,
+                                PBL_IF_ROUND_ELSE(GTextAlignmentRight, GTextAlignmentLeft));
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_transcript_layer));
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
   layer_add_child(root, scroll_layer_get_layer(s_scroll_layer));
 #if defined(PBL_ROUND)
   // Text flow needs the layer to be in the window hierarchy already.
   scroll_layer_set_paging(s_scroll_layer, true);
-  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 20);
+  text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 8);
 #endif
 
-  // On round screens the very bottom is too narrow, so the bar sits on a
-  // wider chord a little higher up.
+  // The bar spans the text area, clear of the action bar. On round screens
+  // the very bottom is too narrow, so it sits on a wider chord higher up.
   GRect bar_frame = PBL_IF_ROUND_ELSE(
-      GRect(45, bounds.size.h - 32, bounds.size.w - 90, BAR_HEIGHT),
-      GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT));
+      GRect(30, bounds.size.h - 32, bounds.size.w - 60 - ACTION_BAR_WIDTH / 2, BAR_HEIGHT),
+      GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w - ACTION_BAR_WIDTH, BAR_HEIGHT));
   s_bar_layer = layer_create(bar_frame);
   layer_set_update_proc(s_bar_layer, prv_bar_update);
   layer_set_hidden(s_bar_layer, true);
@@ -620,17 +594,20 @@ static void prv_window_load(Window *window) {
   s_icon_check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
   s_icon_up = gbitmap_create_with_resource(RESOURCE_ID_ICON_UP);
   s_icon_down = gbitmap_create_with_resource(RESOURCE_ID_ICON_DOWN);
-  s_hints_layer = layer_create(bounds);
-  layer_set_update_proc(s_hints_layer, prv_hints_update);
-  layer_set_hidden(s_hints_layer, true);
-  layer_add_child(root, s_hints_layer);
-
+  s_action_bar = action_bar_layer_create();
+  action_bar_layer_set_click_config_provider(s_action_bar, prv_click_config);
+  action_bar_layer_set_icon_press_animation(s_action_bar, BUTTON_ID_UP,
+                                            ActionBarLayerIconPressAnimationMoveUp);
+  action_bar_layer_set_icon_press_animation(s_action_bar, BUTTON_ID_DOWN,
+                                            ActionBarLayerIconPressAnimationMoveDown);
+  action_bar_layer_add_to_window(s_action_bar, window);
+  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), true);
 }
 
 static void prv_window_unload(Window *window) {
   prv_cancel_dismiss();
   prv_stop_bar();
-  layer_destroy(s_hints_layer);
+  action_bar_layer_destroy(s_action_bar);
   gbitmap_destroy(s_icon_check);
   gbitmap_destroy(s_icon_up);
   gbitmap_destroy(s_icon_down);
