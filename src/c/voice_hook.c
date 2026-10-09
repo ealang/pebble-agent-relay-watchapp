@@ -46,17 +46,29 @@ static int16_t s_line_height;
 
 static uint32_t s_review_delay_s = REVIEW_DELAY_DEFAULT_S;
 
+// Every screen is the same window: either centered status text, or the
+// scrollable transcript with the action bar and a strip along the bottom.
+// The screen decides what the strip shows and what each button does.
+typedef enum {
+  // Centered text: "Loading...", "Sending...", or a failure. Back exits.
+  ScreenStatus,
+  // The transcript with a filling progress bar; when it fills, it sends. Any
+  // button but Back stops it, turning it into ScreenReview.
+  ScreenCountdown,
+  // The transcript, "Not yet sent". Select sends, Back records again.
+  ScreenReview,
+  // A countdown ran out and sent: the transcript stays up with "Sending..."
+  // and then "Sent", which closes after SENT_DISMISS_MS unless scrolled.
+  ScreenSending,
+  ScreenSent,
+  // Dictation heard nothing: a placeholder, no strip. Back records again.
+  ScreenNoSpeech,
+} Screen;
+
+static Screen s_screen;
 static AppTimer *s_bar_timer;
 static uint32_t s_bar_elapsed_ms;
-static bool s_reviewing;
 static bool s_phone_launched;
-// The countdown ran out and sent on its own: keep the transcript up, with the
-// bar region turned into a "Sending..."/"Sent" footer, until Select or Back.
-static bool s_auto_sending;
-static bool s_sent;
-// Dictation heard nothing: the review screen shows a placeholder, no footer.
-static bool s_no_speech;
-static const char *s_footer_text;
 // Whether an unconfirmed send (countdown ran out, or no review at all) leaves
 // the transcript up. Set from the phone's settings page.
 static bool s_sent_screen_enabled = true;
@@ -96,16 +108,13 @@ static void prv_exit_callback(void *context) {
   window_stack_pop_all(false);
 }
 
-static void prv_stop_bar(void) {
+static void prv_stop_bar_timer(void) {
   if (s_bar_timer) {
     app_timer_cancel(s_bar_timer);
     s_bar_timer = NULL;
   }
-  s_footer_text = NULL;
-  layer_set_hidden(s_bar_layer, true);
 }
 
-// Status text is unquoted; only dictated speech is shown in quotes.
 static void prv_cancel_dismiss(void) {
   if (s_dismiss_timer) {
     app_timer_cancel(s_dismiss_timer);
@@ -130,8 +139,8 @@ static void prv_set_bar_icon(ButtonId button, const GBitmap *icon) {
 // since every button there only stops it. Otherwise Up/Down arrows appear
 // when there is more text that way.
 static void prv_update_action_bar(void) {
-  bool counting = s_bar_timer != NULL;
-  prv_set_bar_icon(BUTTON_ID_SELECT, s_reviewing && !counting ? s_icon_check : NULL);
+  bool counting = s_screen == ScreenCountdown;
+  prv_set_bar_icon(BUTTON_ID_SELECT, s_screen == ScreenReview ? s_icon_check : NULL);
   GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
   int16_t visible_h = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
   int16_t content_h = scroll_layer_get_content_size(s_scroll_layer).h;
@@ -140,33 +149,68 @@ static void prv_update_action_bar(void) {
                    !counting && offset.y + content_h > visible_h ? s_icon_down : NULL);
 }
 
-static void prv_pause_review(void);
+// The strip's text on each screen; the countdown draws its bar instead.
+static const char *prv_footer_text(void) {
+  switch (s_screen) {
+    case ScreenReview:
+      return "Not yet sent";
+    case ScreenSending:
+      return "Sending...";
+    case ScreenSent:
+      return "Sent";
+    default:
+      return NULL;
+  }
+}
+
+// Switches what the window shows. The countdown timer runs only on the
+// countdown, and the sent screen's dismiss timer is started by its caller.
+static void prv_set_screen(Screen screen) {
+  s_screen = screen;
+  prv_cancel_dismiss();
+  if (screen != ScreenCountdown) {
+    prv_stop_bar_timer();
+  }
+  bool status = screen == ScreenStatus;
+  layer_set_hidden(text_layer_get_layer(s_status_layer), !status);
+  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), status);
+  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), status);
+  layer_set_hidden(s_bar_layer, screen != ScreenCountdown && !prv_footer_text());
+  layer_mark_dirty(s_bar_layer);
+  prv_update_action_bar();
+}
+
+// Any interaction cancels the auto-send.
+static void prv_pause_review(void) {
+  if (s_screen == ScreenCountdown) {
+    prv_set_screen(ScreenReview);
+  }
+}
+
+// Scrolling the sending/sent screen keeps it up until Select or Back.
+static void prv_keep_sent_screen(void) {
+  if (s_screen == ScreenSending || s_screen == ScreenSent) {
+    s_sent_touched = true;
+    prv_cancel_dismiss();
+  }
+}
 
 // Also reached by a touch drag, which moves the content without any click:
 // that stops a countdown, and keeps the sent screen up, like Up/Down do.
 static void prv_scroll_offset_changed(ScrollLayer *scroll_layer, void *context) {
-  if (s_bar_timer && scroll_layer_get_content_offset(scroll_layer).y != 0) {
+  if (scroll_layer_get_content_offset(scroll_layer).y != 0) {
     prv_pause_review();
-  } else if (s_auto_sending || s_sent) {
-    s_sent_touched = true;
-    prv_cancel_dismiss();
   }
+  prv_keep_sent_screen();
   prv_update_action_bar();
 }
 
+// Status text is unquoted; only dictated speech is shown in quotes.
 static void prv_show_status(const char *text) {
-  prv_cancel_dismiss();
-  s_no_speech = false;
-  s_reviewing = false;
-  s_auto_sending = false;
-  s_sent = false;
-  prv_stop_bar();
   strncpy(s_status_text, text, STATUS_MAX - 1);
   s_status_text[STATUS_MAX - 1] = '\0';
   text_layer_set_text(s_status_layer, s_status_text);
-  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
-  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), true);
-  layer_set_hidden(text_layer_get_layer(s_status_layer), false);
+  prv_set_screen(ScreenStatus);
 }
 
 // Every failure ends here: a double vibe, and the reason stays on screen
@@ -199,24 +243,11 @@ static const char *prv_app_message_text(AppMessageResult result) {
   }
 }
 
-static void prv_show_footer(const char *text) {
-  s_footer_text = text;
-  layer_set_hidden(s_bar_layer, false);
-  layer_mark_dirty(s_bar_layer);
-}
-
 // An auto-send keeps the transcript on screen; any other send shows a status.
 static void prv_send_transcript(bool linger) {
   if (linger) {
-    if (s_bar_timer) {
-      app_timer_cancel(s_bar_timer);
-      s_bar_timer = NULL;
-    }
-    s_reviewing = false;
-    s_auto_sending = true;
     s_sent_touched = false;
-    prv_update_action_bar();
-    prv_show_footer("Sending...");
+    prv_set_screen(ScreenSending);
   } else {
     prv_show_status("Sending...");
   }
@@ -242,10 +273,11 @@ static void prv_send_transcript(bool linger) {
 static void prv_bar_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, GColorBlack);
-  if (s_footer_text) {
+  const char *footer = prv_footer_text();
+  if (footer) {
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, s_footer_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+    graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                        GRect(0, 1, bounds.size.w, bounds.size.h), GTextOverflowModeFill,
                        GTextAlignmentCenter, NULL);
     return;
@@ -270,17 +302,7 @@ static void prv_bar_tick(void *context) {
   s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
 }
 
-// Any interaction cancels the auto-send; the bar becomes a "Not yet sent" footer.
-static void prv_pause_review(void) {
-  if (s_footer_text) {
-    return;
-  }
-  prv_stop_bar();
-  prv_show_footer("Not yet sent");
-  prv_update_action_bar();
-}
-
-// Lays out text in the scrollable review area and shows it with the action bar.
+// Lays out text in the scrollable area; the caller then picks the screen.
 static void prv_show_text(const char *text) {
   text_layer_set_text(s_transcript_layer, text);
 
@@ -297,53 +319,41 @@ static void prv_show_text(const char *text) {
   scroll_layer_set_content_size(s_scroll_layer,
       GSize(content.w, frame.origin.y + content.h + PBL_IF_ROUND_ELSE(40, BAR_HEIGHT + 4)));
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
+}
 
-  layer_set_hidden(text_layer_get_layer(s_status_layer), true);
-  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false);
-  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), false);
-  prv_cancel_dismiss();
+static void prv_show_transcript(void) {
+  snprintf(s_quoted, sizeof(s_quoted), "“%s”", s_transcript);
+  prv_show_text(s_quoted);
 }
 
 static void prv_show_review(void) {
-  snprintf(s_quoted, sizeof(s_quoted), "“%s”", s_transcript);
-  prv_show_text(s_quoted);
-  s_no_speech = false;
-  s_reviewing = true;
-  s_auto_sending = false;
-  s_sent = false;
-  s_footer_text = NULL;
-
-  s_bar_elapsed_ms = 0;
+  prv_show_transcript();
   if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
     // Launched from the phone, or the user asked to always review: never
     // send without an explicit Select.
-    prv_show_footer("Not yet sent");
+    prv_set_screen(ScreenReview);
   } else {
-    layer_set_hidden(s_bar_layer, false);
-    layer_mark_dirty(s_bar_layer);
+    s_bar_elapsed_ms = 0;
+    prv_set_screen(ScreenCountdown);
     s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
   }
-  prv_update_action_bar();
 }
 
 static void prv_start_dictation(void);
 
-static void prv_retake(void) {
-  prv_start_dictation();
-}
-
 // Up and Down scroll like the firmware's scrolling screens; during the
 // countdown they only stop it.
 static void prv_scroll_click(ClickRecognizerRef recognizer, ClickHandler scroll) {
-  if (s_bar_timer) {
-    prv_pause_review();
-    return;
+  switch (s_screen) {
+    case ScreenStatus:
+      return;
+    case ScreenCountdown:
+      prv_pause_review();
+      return;
+    default:
+      prv_keep_sent_screen();
+      scroll(recognizer, s_scroll_layer);
   }
-  if (s_auto_sending || s_sent) {
-    s_sent_touched = true;
-    prv_cancel_dismiss();
-  }
-  scroll(recognizer, s_scroll_layer);
 }
 
 static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
@@ -357,25 +367,35 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
 // Select pauses a running countdown like Up and Down; on a paused review it
 // sends. On the sent and no-speech screens it just closes the app.
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_bar_timer) {
-    prv_pause_review();
-    return;
+  switch (s_screen) {
+    case ScreenCountdown:
+      prv_pause_review();
+      break;
+    case ScreenReview:
+      prv_send_transcript(false);
+      break;
+    case ScreenSent:
+    case ScreenNoSpeech:
+      window_stack_pop_all(false);
+      break;
+    default:
+      break;
   }
-  if (s_sent || s_no_speech) {
-    window_stack_pop_all(false);
-    return;
-  }
-  if (!s_reviewing) {
-    return;
-  }
-  prv_send_transcript(false);
 }
 
+// Back records again wherever there is a transcript to replace, and
+// otherwise exits, including while a send is still in flight.
 static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_reviewing || s_sent || s_no_speech) {
-    prv_retake();
-  } else {
-    window_stack_pop_all(true);
+  switch (s_screen) {
+    case ScreenCountdown:
+    case ScreenReview:
+    case ScreenSent:
+    case ScreenNoSpeech:
+      prv_start_dictation();
+      break;
+    default:
+      window_stack_pop_all(true);
+      break;
   }
 }
 
@@ -425,13 +445,8 @@ static bool prv_is_blank(const char *text) {
 // Nothing to send is not a failure: no vibe, and the review screen without a
 // footer, so Back records again and Select closes.
 static void prv_no_speech(void) {
-  prv_stop_bar();
-  s_reviewing = false;
-  s_auto_sending = false;
-  s_sent = false;
   prv_show_text("[No speech detected]");
-  s_no_speech = true;
-  prv_update_action_bar();
+  prv_set_screen(ScreenNoSpeech);
 }
 
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
@@ -445,7 +460,7 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     s_transcript[TRANSCRIPT_MAX - 1] = '\0';
     if (s_review_delay_s == 0 && !s_phone_launched) {
       if (s_sent_screen_enabled) {
-        prv_show_review();
+        prv_show_transcript();
         prv_send_transcript(true);
       } else {
         prv_send_transcript(false);
@@ -488,15 +503,14 @@ static void prv_start_dictation(void) {
 #endif
 }
 
-// The companion app Acks once the transcript is durably queued on the phone.
-// On success there is nothing left to say, so the app exits at once; a short
-// vibe confirms it without looking. Only failures linger on screen.
+// The companion app Acks once the transcript is durably queued on the phone;
+// a short vibe confirms it without looking. A send the user chose with Select
+// needs no more confirmation, so the app exits at once. An auto-send keeps the
+// transcript up as the sent screen, so it can be checked and redone.
 static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   vibes_short_pulse();
-  if (s_auto_sending) {
-    s_auto_sending = false;
-    s_sent = true;
-    prv_show_footer("Sent");
+  if (s_screen == ScreenSending) {
+    prv_set_screen(ScreenSent);
     if (!s_sent_touched) {
       s_dismiss_timer = app_timer_register(SENT_DISMISS_MS, prv_exit_callback, NULL);
     }
@@ -620,7 +634,7 @@ static void prv_window_load(Window *window) {
 
 static void prv_window_unload(Window *window) {
   prv_cancel_dismiss();
-  prv_stop_bar();
+  prv_stop_bar_timer();
   action_bar_layer_destroy(s_action_bar);
   gbitmap_destroy(s_icon_check);
   gbitmap_destroy(s_icon_up);
