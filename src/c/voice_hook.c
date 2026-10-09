@@ -19,6 +19,13 @@
 #define SENT_DISMISS_MS 30000
 #define BAR_TICK_MS 50
 #define BAR_HEIGHT 20
+// The countdown is a rounded bar in the style of the firmware's progress bar,
+// floating above the footer on a white margin so text scrolled under it does
+// not touch it.
+#define PILL_HEIGHT PBL_IF_COLOR_ELSE(6, 7)
+#define PILL_HALO 4
+#define PILL_MARGIN PBL_IF_ROUND_ELSE(4, 10)
+#define BOTTOM_HEIGHT (BAR_HEIGHT + PILL_HEIGHT + 2 * PILL_HALO)
 // Height of the box the transcript is measured in; comfortably more than
 // TRANSCRIPT_MAX characters can fill at the largest font on the narrowest screen.
 #define TEXT_MAX_HEIGHT 4000
@@ -152,6 +159,7 @@ static void prv_update_action_bar(void) {
 // The strip's text on each screen; the countdown draws its bar instead.
 static const char *prv_footer_text(void) {
   switch (s_screen) {
+    case ScreenCountdown:
     case ScreenReview:
       return "Not yet sent";
     case ScreenSending:
@@ -272,25 +280,39 @@ static void prv_send_transcript(bool linger) {
 
 static void prv_bar_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  graphics_context_set_fill_color(ctx, GColorBlack);
   const char *footer = prv_footer_text();
   if (footer) {
-    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+    GRect strip = GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT);
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_fill_rect(ctx, strip, 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(0, 1, bounds.size.w, bounds.size.h), GTextOverflowModeFill,
-                       GTextAlignmentCenter, NULL);
+    strip.origin.y += 1;
+    graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), strip,
+                       GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+  }
+  if (s_screen != ScreenCountdown) {
     return;
   }
-  int16_t width = s_review_delay_s ? bounds.size.w * s_bar_elapsed_ms / (s_review_delay_s * 1000) : 0;
+  // Colours as on the firmware's dictation screen: black on dark grey, or an
+  // outlined white track on black-and-white watches.
+  const int16_t radius = PILL_HEIGHT / 2;
+  GRect pill = GRect(PILL_MARGIN, PILL_HALO, bounds.size.w - 2 * PILL_MARGIN, PILL_HEIGHT);
   graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_fill_rect(ctx, grect_inset(pill, GEdgeInsets(-PILL_HALO)), radius + PILL_HALO,
+                     GCornersAll);
+  graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorWhite));
+  graphics_fill_rect(ctx, pill, radius, GCornersAll);
   graphics_context_set_fill_color(ctx, GColorBlack);
+  GRect filled = pill;
+  filled.size.w = pill.size.w * s_bar_elapsed_ms / (s_review_delay_s * 1000);
+  if (filled.size.w > 0) {
+    graphics_fill_rect(ctx, filled, filled.size.w < 2 * radius ? filled.size.w / 2 : radius,
+                       GCornersAll);
+  }
+#if !defined(PBL_COLOR)
   graphics_context_set_stroke_color(ctx, GColorBlack);
-  // A 2 px outline, so the empty bar stands out against the transcript.
-  graphics_draw_rect(ctx, bounds);
-  graphics_draw_rect(ctx, grect_inset(bounds, GEdgeInsets(1)));
-  graphics_fill_rect(ctx, GRect(0, 0, width, bounds.size.h), 0, GCornerNone);
+  graphics_draw_round_rect(ctx, pill, radius);
+#endif
 }
 
 static void prv_bar_tick(void *context) {
@@ -319,7 +341,7 @@ static void prv_show_text(const char *text) {
   text_layer_set_size(s_transcript_layer, content);
   // Leave room under the text so the bar never covers the last line.
   scroll_layer_set_content_size(s_scroll_layer,
-      GSize(content.w, frame.origin.y + content.h + PBL_IF_ROUND_ELSE(40, BAR_HEIGHT + 4)));
+      GSize(content.w, frame.origin.y + content.h + BOTTOM_HEIGHT + PBL_IF_ROUND_ELSE(24, 4)));
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
 }
 
@@ -613,8 +635,9 @@ static void prv_window_load(Window *window) {
   // round screens the very bottom is too narrow, so it sits on a wider chord
   // a little higher up.
   GRect bar_frame = PBL_IF_ROUND_ELSE(
-      GRect(45, bounds.size.h - 32, bounds.size.w - 90, BAR_HEIGHT),
-      GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT));
+      GRect(45, bounds.size.h - 32 - (BOTTOM_HEIGHT - BAR_HEIGHT), bounds.size.w - 90,
+            BOTTOM_HEIGHT),
+      GRect(0, bounds.size.h - BOTTOM_HEIGHT, bounds.size.w, BOTTOM_HEIGHT));
   s_bar_layer = layer_create(bar_frame);
   layer_set_update_proc(s_bar_layer, prv_bar_update);
   layer_set_hidden(s_bar_layer, true);
