@@ -567,11 +567,17 @@ static void prv_load_review_delay(void) {
 }
 
 // The phone pushes the setting at every launch and whenever it is saved.
+// The phone resends the settings at every launch, so a value is written only
+// when it changed (or was never stored, so a later change of default cannot
+// override the user's choice), sparing the flash a write per launch.
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *sent_screen = dict_find(iter, MESSAGE_KEY_SENT_SCREEN);
   if (sent_screen) {
-    s_sent_screen_enabled = sent_screen->value->int32 != 0;
-    persist_write_bool(PERSIST_KEY_SENT_SCREEN, s_sent_screen_enabled);
+    bool enabled = sent_screen->value->int32 != 0;
+    if (enabled != s_sent_screen_enabled || !persist_exists(PERSIST_KEY_SENT_SCREEN)) {
+      s_sent_screen_enabled = enabled;
+      persist_write_bool(PERSIST_KEY_SENT_SCREEN, enabled);
+    }
   }
   Tuple *tuple = dict_find(iter, MESSAGE_KEY_REVIEW_DELAY);
   if (!tuple) {
@@ -581,8 +587,10 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   if (!prv_review_delay_is_valid(seconds)) {
     return;
   }
-  s_review_delay_s = seconds;
-  persist_write_int(PERSIST_KEY_REVIEW_DELAY, seconds);
+  if ((uint32_t)seconds != s_review_delay_s || !persist_exists(PERSIST_KEY_REVIEW_DELAY)) {
+    s_review_delay_s = seconds;
+    persist_write_int(PERSIST_KEY_REVIEW_DELAY, seconds);
+  }
 }
 
 // --- Window ------------------------------------------------------------------
