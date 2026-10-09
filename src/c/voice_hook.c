@@ -31,6 +31,9 @@
 #define TEXT_MAX_HEIGHT 4000
 
 static Window *s_window;
+// Shown first when the phone launches the app; see prv_gate_push.
+static Window *s_gate_window;
+static TextLayer *s_gate_text;
 static TextLayer *s_status_layer;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
@@ -75,7 +78,9 @@ typedef enum {
 static Screen s_screen;
 static AppTimer *s_bar_timer;
 static uint32_t s_bar_elapsed_ms;
-static bool s_phone_launched;
+// Fixed when the countdown starts, so a setting saved meanwhile cannot
+// change it (or make it zero) partway through.
+static uint32_t s_bar_total_ms;
 // Whether an unconfirmed send (countdown ran out, or no review at all) leaves
 // the transcript up. Set from the phone's settings page.
 static bool s_sent_screen_enabled = true;
@@ -304,7 +309,7 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
   graphics_fill_rect(ctx, pill, radius, GCornersAll);
   graphics_context_set_fill_color(ctx, GColorBlack);
   GRect filled = pill;
-  filled.size.w = pill.size.w * s_bar_elapsed_ms / (s_review_delay_s * 1000);
+  filled.size.w = pill.size.w * s_bar_elapsed_ms / s_bar_total_ms;
   if (filled.size.w > 0) {
     graphics_fill_rect(ctx, filled, filled.size.w < 2 * radius ? filled.size.w / 2 : radius,
                        GCornersAll);
@@ -317,7 +322,7 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
 
 static void prv_bar_tick(void *context) {
   s_bar_elapsed_ms += BAR_TICK_MS;
-  if (s_bar_elapsed_ms >= s_review_delay_s * 1000) {
+  if (s_bar_elapsed_ms >= s_bar_total_ms) {
     s_bar_timer = NULL;
     prv_send_transcript(s_sent_screen_enabled);
     return;
@@ -352,12 +357,11 @@ static void prv_show_transcript(void) {
 
 static void prv_show_review(void) {
   prv_show_transcript();
-  if (s_phone_launched || s_review_delay_s == REVIEW_DELAY_MANUAL) {
-    // Launched from the phone, or the user asked to always review: never
-    // send without an explicit Select.
+  if (s_review_delay_s == REVIEW_DELAY_MANUAL) {
     prv_set_screen(ScreenReview);
   } else {
     s_bar_elapsed_ms = 0;
+    s_bar_total_ms = s_review_delay_s * 1000;
     prv_set_screen(ScreenCountdown);
     s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
   }
@@ -482,7 +486,7 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     }
     strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
     s_transcript[TRANSCRIPT_MAX - 1] = '\0';
-    if (s_review_delay_s == 0 && !s_phone_launched) {
+    if (s_review_delay_s == 0) {
       if (s_sent_screen_enabled) {
         prv_show_transcript();
         prv_send_transcript(true);
@@ -499,13 +503,8 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     return;
   }
   if (status == DictationSessionStatusFailureTranscriptionRejected) {
-    // The user backed out; nothing to report. Stay up only so a phone
-    // launch does not close the settings page.
-    if (s_phone_launched) {
-      prv_show_status("Dictation cancelled");
-    } else {
-      window_stack_pop_all(false);
-    }
+    // The user backed out; nothing to report.
+    window_stack_pop_all(false);
     return;
   }
   prv_fail(prv_dictation_failure_text(status));
@@ -670,25 +669,14 @@ static void prv_window_unload(Window *window) {
   text_layer_destroy(s_status_layer);
 }
 
-static void prv_init(void) {
-  // Third-party apps are left out of the firmware's touch navigation unless
-  // they ask: dragging scrolls the transcript, and the action bar's icons
-  // can be tapped, as on the system screens. Needs SDK 4.33 or later.
-  app_touch_navigation_enable(true);
-  s_phone_launched = launch_reason() == APP_LAUNCH_PHONE;
-  prv_load_review_delay();
-
+// Pushes the transcript window and starts recording.
+static void prv_start(void) {
   s_window = window_create();
   window_set_window_handlers(s_window, (WindowHandlers){
     .load = prv_window_load,
     .unload = prv_window_unload,
   });
   window_stack_push(s_window, true);
-
-  app_message_register_inbox_received(prv_inbox_received);
-  app_message_register_outbox_sent(prv_outbox_sent);
-  app_message_register_outbox_failed(prv_outbox_failed);
-  app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, app_message_outbox_size_maximum());
 
 #if defined(PBL_MICROPHONE)
   s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
@@ -709,13 +697,85 @@ static void prv_init(void) {
 #endif
 }
 
+// --- Phone launch -------------------------------------------------------------
+
+// The phone launches the app to open its settings page, and also from
+// "Start app" and on install, with no way to tell these apart. So a phone
+// launch waits for a button before recording; settings saved meanwhile
+// apply to that recording. On touch watches a tap or swipe arrives as a
+// button, since this page has no widgets of its own.
+
+static void prv_gate_continue(ClickRecognizerRef recognizer, void *context) {
+  // Push first: removing the only window would end the app.
+  prv_start();
+  window_stack_remove(s_gate_window, false);
+}
+
+static void prv_gate_click_config(void *context) {
+  window_single_click_subscribe(BUTTON_ID_UP, prv_gate_continue);
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_gate_continue);
+  window_single_click_subscribe(BUTTON_ID_DOWN, prv_gate_continue);
+}
+
+static void prv_gate_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  GFont font = prv_content_font();
+  int16_t h = prv_measure_line_height(font) * 2;
+  int16_t inset = PBL_IF_ROUND_ELSE(18, 4);
+  s_gate_text = text_layer_create(
+      GRect(inset, (bounds.size.h - h) / 2, bounds.size.w - 2 * inset, h));
+  text_layer_set_text(s_gate_text, "Press to continue");
+  text_layer_set_text_alignment(s_gate_text, GTextAlignmentCenter);
+  text_layer_set_font(s_gate_text, font);
+  layer_add_child(root, text_layer_get_layer(s_gate_text));
+}
+
+static void prv_gate_window_unload(Window *window) {
+  text_layer_destroy(s_gate_text);
+}
+
+static void prv_gate_push(void) {
+  s_gate_window = window_create();
+  window_set_click_config_provider(s_gate_window, prv_gate_click_config);
+  window_set_window_handlers(s_gate_window, (WindowHandlers){
+    .load = prv_gate_window_load,
+    .unload = prv_gate_window_unload,
+  });
+  window_stack_push(s_gate_window, true);
+}
+
+static void prv_init(void) {
+  // Third-party apps are left out of the firmware's touch navigation unless
+  // they ask: dragging scrolls the transcript, and the action bar's icons
+  // can be tapped, as on the system screens. Needs SDK 4.33 or later.
+  app_touch_navigation_enable(true);
+  prv_load_review_delay();
+
+  app_message_register_inbox_received(prv_inbox_received);
+  app_message_register_outbox_sent(prv_outbox_sent);
+  app_message_register_outbox_failed(prv_outbox_failed);
+  app_message_open(APP_MESSAGE_INBOX_SIZE_MINIMUM, app_message_outbox_size_maximum());
+
+  if (launch_reason() == APP_LAUNCH_PHONE) {
+    prv_gate_push();
+  } else {
+    prv_start();
+  }
+}
+
 static void prv_deinit(void) {
 #if defined(PBL_MICROPHONE)
   if (s_dictation) {
     dictation_session_destroy(s_dictation);
   }
 #endif
-  window_destroy(s_window);
+  if (s_window) {
+    window_destroy(s_window);
+  }
+  if (s_gate_window) {
+    window_destroy(s_gate_window);
+  }
 }
 
 int main(void) {

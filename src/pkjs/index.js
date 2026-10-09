@@ -32,7 +32,7 @@ Pebble.addEventListener('webviewclosed', function (e) {
 
 // Also push the stored setting at every launch, so a save that happened
 // while the watchapp was closed still reaches the watch. The watch persists
-// it; a change takes effect from the next launch.
+// it and applies it from the next recording.
 Pebble.addEventListener('ready', function () {
   var settings = {};
   try {

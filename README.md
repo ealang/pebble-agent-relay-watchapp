@@ -61,9 +61,9 @@ the watch's settings.
 - **Long-press Back** exits from any screen without sending.
 
 When the app is launched from the phone (the "Start app" button, an
-install, or opening the settings page), the review opens without a
-countdown so nothing is sent by accident, and the app never exits on its
-own so the settings page is not closed under you.
+install, or opening the settings page), it shows `Press to continue` and
+records nothing until you press Up, Select or Down (or tap or swipe up or
+down); Back exits. After that it behaves exactly as a launch from the watch.
 
 Dictated text is always shown in quotes; status messages are not.
 
@@ -77,9 +77,9 @@ The phone app's settings page has two options:
 - **Show what was sent** (on by default): whether a message sent without
   Select stays on screen as the Sent screen, or the app exits on the Ack.
 
-The settings are persisted on the watch, so they add no startup delay; a
-change takes effect from the next launch. Phone launches always wait for
-Select regardless of the setting.
+The settings are persisted on the watch, so they add no startup delay. A
+save reaches the watch at once if the app is open and applies from the
+next recording; a countdown already running keeps its length.
 
 Text follows the watch's Text Size setting (Settings → Notifications), so
 the review matches the system UI.
