@@ -29,8 +29,8 @@ static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
 static Layer *s_bar_layer;
 // The standard action bar, as on the firmware's dictation review, with that
-// screen's own icons. It shows on every transcript screen; its icons appear
-// only for what the buttons do there.
+// screen's own icons recoloured black. Its background is clear, so it is
+// invisible except for icons, which appear only for what the buttons do.
 static ActionBarLayer *s_action_bar;
 static GBitmap *s_icon_check;
 static GBitmap *s_icon_up;
@@ -140,7 +140,17 @@ static void prv_update_action_bar(void) {
                    !counting && offset.y + content_h > visible_h ? s_icon_down : NULL);
 }
 
+static void prv_pause_review(void);
+
+// Also reached by a touch drag, which moves the content without any click:
+// that stops a countdown, and keeps the sent screen up, like Up/Down do.
 static void prv_scroll_offset_changed(ScrollLayer *scroll_layer, void *context) {
+  if (s_bar_timer && scroll_layer_get_content_offset(scroll_layer).y != 0) {
+    prv_pause_review();
+  } else if (s_auto_sending || s_sent) {
+    s_sent_touched = true;
+    prv_cancel_dismiss();
+  }
   prv_update_action_bar();
 }
 
@@ -560,8 +570,10 @@ static void prv_window_load(Window *window) {
 
   // The transcript sits beside the action bar as on the firmware's dictation
   // review: a 4 px margin, left-aligned on rectangular screens and
-  // right-aligned against the curved bar on round ones.
-  int16_t text_w = bounds.size.w - 8 - ACTION_BAR_WIDTH - PBL_IF_ROUND_ELSE(10, 0);
+  // right-aligned against the curved bar on round ones. The bar is invisible,
+  // so on rectangular screens the text runs up to just short of its icons.
+  int16_t text_w = PBL_IF_ROUND_ELSE(bounds.size.w - 8 - ACTION_BAR_WIDTH - 10,
+                                     bounds.size.w - 4 - (ACTION_BAR_WIDTH - 6));
   s_scroll_layer = scroll_layer_create(bounds);
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
   scroll_layer_set_callbacks(s_scroll_layer, (ScrollLayerCallbacks) {
@@ -581,11 +593,12 @@ static void prv_window_load(Window *window) {
   text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 8);
 #endif
 
-  // The bar spans the text area, clear of the action bar. On round screens
-  // the very bottom is too narrow, so it sits on a wider chord higher up.
+  // The action bar is invisible down there, so the bar spans the screen. On
+  // round screens the very bottom is too narrow, so it sits on a wider chord
+  // a little higher up.
   GRect bar_frame = PBL_IF_ROUND_ELSE(
-      GRect(30, bounds.size.h - 32, bounds.size.w - 60 - ACTION_BAR_WIDTH / 2, BAR_HEIGHT),
-      GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w - ACTION_BAR_WIDTH, BAR_HEIGHT));
+      GRect(45, bounds.size.h - 32, bounds.size.w - 90, BAR_HEIGHT),
+      GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT));
   s_bar_layer = layer_create(bar_frame);
   layer_set_update_proc(s_bar_layer, prv_bar_update);
   layer_set_hidden(s_bar_layer, true);
@@ -600,6 +613,7 @@ static void prv_window_load(Window *window) {
                                             ActionBarLayerIconPressAnimationMoveUp);
   action_bar_layer_set_icon_press_animation(s_action_bar, BUTTON_ID_DOWN,
                                             ActionBarLayerIconPressAnimationMoveDown);
+  action_bar_layer_set_background_color(s_action_bar, GColorClear);
   action_bar_layer_add_to_window(s_action_bar, window);
   layer_set_hidden(action_bar_layer_get_layer(s_action_bar), true);
 }
@@ -618,6 +632,10 @@ static void prv_window_unload(Window *window) {
 }
 
 static void prv_init(void) {
+  // Third-party apps are left out of the firmware's touch navigation unless
+  // they ask: dragging scrolls the transcript, and the action bar's icons
+  // can be tapped, as on the system screens. Needs SDK 4.33 or later.
+  app_touch_navigation_enable(true);
   s_phone_launched = launch_reason() == APP_LAUNCH_PHONE;
   prv_load_review_delay();
 
