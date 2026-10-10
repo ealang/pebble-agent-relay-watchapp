@@ -20,12 +20,13 @@
 #define BAR_TICK_MS 50
 #define BAR_HEIGHT 20
 // The countdown is a rounded bar in the style of the firmware's progress bar,
-// floating above the footer on a white margin so text scrolled under it does
-// not touch it.
-#define PILL_HEIGHT PBL_IF_COLOR_ELSE(6, 7)
-#define PILL_HALO 4
-#define PILL_MARGIN PBL_IF_ROUND_ELSE(49, 10)
-#define BOTTOM_HEIGHT (BAR_HEIGHT + PILL_HEIGHT + 2 * PILL_HALO)
+// drawn over the text just above the footer. It takes the same share of the
+// screen's width at its height on every watch, with chalk's proportions,
+// 82 x 6 px, plus a pixel for the outline on black-and-white watches.
+#define PILL_GAP 4
+#define PILL_WIDTH_PERCENT 60
+#define PILL_ASPECT_W 82
+#define PILL_ASPECT_H 6
 // Round screens leave a blank margin above the text so the first line is not
 // cut by the curve. The firmware's dictation review uses the status bar height
 // there; without a clock, chalk fits a line more with 8 px less, while gabbro
@@ -46,6 +47,9 @@ static TextLayer *s_status_layer;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
 static Layer *s_bar_layer;
+// The countdown bar, and the top of the footer strip, in s_bar_layer.
+static GRect s_pill;
+static int16_t s_footer_y;
 // The standard action bar, as on the firmware's dictation review, with that
 // screen's own icons recoloured black. Its background is clear, so it is
 // invisible except for icons, which appear only for what the buttons do.
@@ -291,12 +295,21 @@ static void prv_send_transcript(bool linger) {
 
 // --- Review screen -----------------------------------------------------------
 
+#if defined(PBL_ROUND)
+static int32_t prv_isqrt(int32_t n) {
+  int32_t x = 0;
+  while ((x + 1) * (x + 1) <= n) {
+    x++;
+  }
+  return x;
+}
+#endif
+
 static void prv_bar_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   const char *footer = prv_footer_text();
   if (footer) {
-    GRect strip = GRect(0, BOTTOM_HEIGHT - BAR_HEIGHT, bounds.size.w,
-                        bounds.size.h - (BOTTOM_HEIGHT - BAR_HEIGHT));
+    GRect strip = GRect(0, s_footer_y, bounds.size.w, bounds.size.h - s_footer_y);
     graphics_context_set_fill_color(ctx, GColorBlack);
     graphics_fill_rect(ctx, strip, 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
@@ -310,11 +323,8 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
   }
   // Colours as on the firmware's dictation screen: black on dark grey, or an
   // outlined white track on black-and-white watches.
-  const int16_t radius = PILL_HEIGHT / 2;
-  GRect pill = GRect(PILL_MARGIN, PILL_HALO, bounds.size.w - 2 * PILL_MARGIN, PILL_HEIGHT);
-  graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_fill_rect(ctx, grect_inset(pill, GEdgeInsets(-PILL_HALO)), radius + PILL_HALO,
-                     GCornersAll);
+  GRect pill = s_pill;
+  const int16_t radius = pill.size.h / 2;
   graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorWhite));
   graphics_fill_rect(ctx, pill, radius, GCornersAll);
   graphics_context_set_fill_color(ctx, GColorBlack);
@@ -652,8 +662,20 @@ static void prv_window_load(Window *window) {
 #endif
 
   // The action bar is invisible down there, so the footer spans the screen.
-  // On round screens the countdown bar is inset to fit the narrower chord.
-  int16_t bar_top = footer_top - (BOTTOM_HEIGHT - BAR_HEIGHT);
+  // On round screens the bar is sized to the circle's width just above the
+  // footer.
+  int16_t screen_w = bounds.size.w;
+#if defined(PBL_ROUND)
+  int32_t r = bounds.size.w / 2;
+  int32_t dy = footer_top - PILL_GAP - bounds.size.h / 2;
+  screen_w = 2 * prv_isqrt(r * r - dy * dy);
+#endif
+  int16_t pill_w = screen_w * PILL_WIDTH_PERCENT / 100;
+  int16_t pill_h = (pill_w * PILL_ASPECT_H + PILL_ASPECT_W / 2) / PILL_ASPECT_W +
+                   PBL_IF_COLOR_ELSE(0, 1);
+  int16_t bar_top = footer_top - PILL_GAP - pill_h;
+  s_footer_y = footer_top - bar_top;
+  s_pill = GRect((bounds.size.w - pill_w) / 2, 0, pill_w, pill_h);
   s_bar_layer = layer_create(GRect(0, bar_top, bounds.size.w, bounds.size.h - bar_top));
   layer_set_update_proc(s_bar_layer, prv_bar_update);
   layer_set_hidden(s_bar_layer, true);
