@@ -24,8 +24,14 @@
 // not touch it.
 #define PILL_HEIGHT PBL_IF_COLOR_ELSE(6, 7)
 #define PILL_HALO 4
-#define PILL_MARGIN PBL_IF_ROUND_ELSE(4, 10)
+#define PILL_MARGIN PBL_IF_ROUND_ELSE(49, 10)
 #define BOTTOM_HEIGHT (BAR_HEIGHT + PILL_HEIGHT + 2 * PILL_HALO)
+// Round screens leave the firmware's status bar height blank above the text,
+// as its own dictation review does, so the first line is not cut by the curve.
+#define TOP_MARGIN PBL_IF_ROUND_ELSE(STATUS_BAR_LAYER_HEIGHT, 0)
+// On round screens the footer sits this far above the bottom, where the screen
+// is wide enough for its text, and the black runs on down to the edge.
+#define FOOTER_LIFT PBL_IF_ROUND_ELSE(12, 0)
 // Height of the box the transcript is measured in; comfortably more than
 // TRANSCRIPT_MAX characters can fill at the largest font on the narrowest screen.
 #define TEXT_MAX_HEIGHT 4000
@@ -184,7 +190,7 @@ static void prv_set_screen(Screen screen) {
   if (screen != ScreenCountdown) {
     prv_stop_bar_timer();
   }
-  bool status = screen == ScreenStatus;
+  bool status = screen == ScreenStatus || screen == ScreenNoSpeech;
   layer_set_hidden(text_layer_get_layer(s_status_layer), !status);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), status);
   layer_set_hidden(action_bar_layer_get_layer(s_action_bar), status);
@@ -287,11 +293,13 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   const char *footer = prv_footer_text();
   if (footer) {
-    GRect strip = GRect(0, bounds.size.h - BAR_HEIGHT, bounds.size.w, BAR_HEIGHT);
+    GRect strip = GRect(0, BOTTOM_HEIGHT - BAR_HEIGHT, bounds.size.w,
+                        bounds.size.h - (BOTTOM_HEIGHT - BAR_HEIGHT));
     graphics_context_set_fill_color(ctx, GColorBlack);
     graphics_fill_rect(ctx, strip, 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
     strip.origin.y += 1;
+    strip.size.h = BAR_HEIGHT;
     graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), strip,
                        GTextOverflowModeFill, GTextAlignmentCenter, NULL);
   }
@@ -344,9 +352,9 @@ static void prv_show_text(const char *text) {
   content.w = frame.size.w;
   content.h += s_line_height / 2;  // room for the last line's descenders
   text_layer_set_size(s_transcript_layer, content);
-  // Leave room under the text so the bar never covers the last line.
+  // The scroll layer ends at the footer, so the text needs no room under it.
   scroll_layer_set_content_size(s_scroll_layer,
-      GSize(content.w, frame.origin.y + content.h + BOTTOM_HEIGHT + PBL_IF_ROUND_ELSE(24, 4)));
+                                GSize(content.w, frame.origin.y + content.h + 4));
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
 }
 
@@ -473,7 +481,7 @@ static bool prv_is_blank(const char *text) {
 // Nothing to send is not a failure: no vibe, and the review screen without a
 // footer, so Back records again and Select closes.
 static void prv_no_speech(void) {
-  prv_show_text("[No speech detected]");
+  text_layer_set_text(s_status_layer, "[No speech detected]");
   prv_set_screen(ScreenNoSpeech);
 }
 
@@ -619,7 +627,11 @@ static void prv_window_load(Window *window) {
   // so on rectangular screens the text runs up to just short of its icons.
   int16_t text_w = PBL_IF_ROUND_ELSE(bounds.size.w - 8 - ACTION_BAR_WIDTH - 10,
                                      bounds.size.w - 4 - (ACTION_BAR_WIDTH - 6));
-  s_scroll_layer = scroll_layer_create(bounds);
+  // The text area runs from the top margin down to the footer strip; the
+  // countdown bar floats over its bottom edge.
+  int16_t footer_top = bounds.size.h - FOOTER_LIFT - BAR_HEIGHT;
+  s_scroll_layer = scroll_layer_create(
+      GRect(0, TOP_MARGIN, bounds.size.w, footer_top - TOP_MARGIN));
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
   scroll_layer_set_callbacks(s_scroll_layer, (ScrollLayerCallbacks) {
     .content_offset_changed_handler = prv_scroll_offset_changed,
@@ -638,14 +650,10 @@ static void prv_window_load(Window *window) {
   text_layer_enable_screen_text_flow_and_paging(s_transcript_layer, 8);
 #endif
 
-  // The action bar is invisible down there, so the bar spans the screen. On
-  // round screens the very bottom is too narrow, so it sits on a wider chord
-  // a little higher up.
-  GRect bar_frame = PBL_IF_ROUND_ELSE(
-      GRect(45, bounds.size.h - 32 - (BOTTOM_HEIGHT - BAR_HEIGHT), bounds.size.w - 90,
-            BOTTOM_HEIGHT),
-      GRect(0, bounds.size.h - BOTTOM_HEIGHT, bounds.size.w, BOTTOM_HEIGHT));
-  s_bar_layer = layer_create(bar_frame);
+  // The action bar is invisible down there, so the footer spans the screen.
+  // On round screens the countdown bar is inset to fit the narrower chord.
+  int16_t bar_top = footer_top - (BOTTOM_HEIGHT - BAR_HEIGHT);
+  s_bar_layer = layer_create(GRect(0, bar_top, bounds.size.w, bounds.size.h - bar_top));
   layer_set_update_proc(s_bar_layer, prv_bar_update);
   layer_set_hidden(s_bar_layer, true);
   layer_add_child(root, s_bar_layer);
