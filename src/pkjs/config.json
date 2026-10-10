@@ -21,6 +21,7 @@
           { "label": "Immediately, no review", "value": "0" },
           { "label": "1 second", "value": "1" },
           { "label": "2 seconds", "value": "2" },
+          { "label": "3 seconds", "value": "3" },
           { "label": "5 seconds", "value": "5" },
           { "label": "Only when I press Select", "value": "255" }
         ]
@@ -29,7 +30,7 @@
         "type": "toggle",
         "messageKey": "SENT_SCREEN",
         "label": "Show what was sent",
-        "description": "When a message goes out without you pressing Select, keep it on screen marked Sent. Select closes it, Back records again, and it closes by itself after 30 seconds unless you scroll.",
+        "description": "When a message goes out without you pressing Select, display it on a review screen.",
         "defaultValue": true
       }
     ]

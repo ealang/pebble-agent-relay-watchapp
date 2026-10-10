@@ -56,9 +56,11 @@ the watch's settings.
   and exits on the Ack. Back discards the transcript and records again.
 - **Sent**: after the countdown sends, the transcript stays up marked
   `Sending...` and then `Sent`. Up / Down scroll, Select exits, Back
-  records a new message. It closes by itself 30 seconds after the Ack
-  unless you scroll it. This screen can be turned off in the settings.
+  records a new message. This screen can be turned off in the settings.
 - **Long-press Back** exits from any screen without sending.
+
+The review, sent and no-speech screens close the app after 30 seconds
+without a button press or drag; a review that times out is not sent.
 
 When the app is launched from the phone (the "Start app" button, an
 install, or opening the settings page), it shows `Press to continue` and
@@ -72,10 +74,11 @@ Dictated text is always shown in quotes; status messages are not.
 The phone app's settings page has two options:
 
 - **Send after**: how long the countdown runs before sending. Choose 1, 2
-  (default) or 5 seconds, *Immediately, no review* to send as soon as
+  (default), 3 or 5 seconds, *Immediately, no review* to send as soon as
   dictation finishes, or *Only when I press Select* to always wait for you.
 - **Show what was sent** (on by default): whether a message sent without
   Select stays on screen as the Sent screen, or the app exits on the Ack.
+  Hidden when sending only on Select, since then every send is a press.
 
 The settings are persisted on the watch, so they add no startup delay. A
 save reaches the watch at once if the app is open and applies from the

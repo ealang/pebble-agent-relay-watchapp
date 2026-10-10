@@ -3,7 +3,27 @@ var clayConfig = require('./config.json');
 
 // Events are handled here rather than by Clay so the select's string value
 // and the toggle's boolean reach the watch as numbers.
-var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+var clay = new Clay(clayConfig, hideSentScreenWhenManual, { autoHandleEvents: false });
+
+// Runs inside the settings page (Clay passes it as source, so it must not
+// use anything from this file). Without a countdown every send is a Select
+// press, so the sent screen option would do nothing; hide it.
+function hideSentScreenWhenManual() {
+  var clayConfig = this;
+  clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function () {
+    var delay = clayConfig.getItemByMessageKey('REVIEW_DELAY');
+    var sentScreen = clayConfig.getItemByMessageKey('SENT_SCREEN');
+    function update() {
+      if (delay.get() === '255') {
+        sentScreen.hide();
+      } else {
+        sentScreen.show();
+      }
+    }
+    delay.on('change', update);
+    update();
+  });
+}
 
 function sendSettings(settings) {
   var seconds = parseInt(settings.REVIEW_DELAY, 10);

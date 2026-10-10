@@ -16,7 +16,7 @@
 #define PERSIST_KEY_LEGACY_ERROR_DIALOGS 2
 #define PERSIST_KEY_REVIEW_DELAY 3
 #define PERSIST_KEY_SENT_SCREEN 4
-#define SENT_DISMISS_MS 30000
+#define IDLE_EXIT_MS 30000
 #define BAR_TICK_MS 50
 #define BAR_HEIGHT 20
 // The countdown is a rounded bar in the style of the firmware's progress bar,
@@ -76,7 +76,7 @@ typedef enum {
   // The transcript, "Not yet sent". Select sends, Back records again.
   ScreenReview,
   // A countdown ran out and sent: the transcript stays up with "Sending..."
-  // and then "Sent", which closes after SENT_DISMISS_MS unless scrolled.
+  // and then "Sent".
   ScreenSending,
   ScreenSent,
   // Dictation heard nothing: a placeholder, no strip. Back records again.
@@ -92,9 +92,10 @@ static uint32_t s_bar_total_ms;
 // Whether an unconfirmed send (countdown ran out, or no review at all) leaves
 // the transcript up. Set from the phone's settings page.
 static bool s_sent_screen_enabled = true;
-// Any scroll on the sending/sent screen keeps it up past SENT_DISMISS_MS.
-static bool s_sent_touched;
-static AppTimer *s_dismiss_timer;
+// Closes the app after IDLE_EXIT_MS without input on the review, sent and
+// no-speech screens, so a forgotten review does not stay open; nothing is
+// sent. Failures stay up until Back so they can be read.
+static AppTimer *s_idle_timer;
 
 // The icons currently on the action bar, so an unchanged icon is not
 // animated in again.
@@ -135,10 +136,18 @@ static void prv_stop_bar_timer(void) {
   }
 }
 
-static void prv_cancel_dismiss(void) {
-  if (s_dismiss_timer) {
-    app_timer_cancel(s_dismiss_timer);
-    s_dismiss_timer = NULL;
+static void prv_cancel_idle(void) {
+  if (s_idle_timer) {
+    app_timer_cancel(s_idle_timer);
+    s_idle_timer = NULL;
+  }
+}
+
+// Starts the idle timeout over; called on every screen change and input.
+static void prv_restart_idle(void) {
+  prv_cancel_idle();
+  if (s_screen == ScreenReview || s_screen == ScreenSent || s_screen == ScreenNoSpeech) {
+    s_idle_timer = app_timer_register(IDLE_EXIT_MS, prv_exit_callback, NULL);
   }
 }
 
@@ -185,10 +194,10 @@ static const char *prv_footer_text(void) {
 }
 
 // Switches what the window shows. The countdown timer runs only on the
-// countdown, and the sent screen's dismiss timer is started by its caller.
+// countdown.
 static void prv_set_screen(Screen screen) {
   s_screen = screen;
-  prv_cancel_dismiss();
+  prv_restart_idle();
   if (screen != ScreenCountdown) {
     prv_stop_bar_timer();
   }
@@ -208,21 +217,13 @@ static void prv_pause_review(void) {
   }
 }
 
-// Scrolling the sending/sent screen keeps it up until Select or Back.
-static void prv_keep_sent_screen(void) {
-  if (s_screen == ScreenSending || s_screen == ScreenSent) {
-    s_sent_touched = true;
-    prv_cancel_dismiss();
-  }
-}
-
 // Also reached by a touch drag, which moves the content without any click:
-// that stops a countdown, and keeps the sent screen up, like Up/Down do.
+// that stops a countdown, and resets the idle timeout, like Up/Down do.
 static void prv_scroll_offset_changed(ScrollLayer *scroll_layer, void *context) {
   if (scroll_layer_get_content_offset(scroll_layer).y != 0) {
     prv_pause_review();
   }
-  prv_keep_sent_screen();
+  prv_restart_idle();
   prv_update_action_bar();
 }
 
@@ -267,7 +268,6 @@ static const char *prv_app_message_text(AppMessageResult result) {
 // An auto-send keeps the transcript on screen; any other send shows a status.
 static void prv_send_transcript(bool linger) {
   if (linger) {
-    s_sent_touched = false;
     prv_set_screen(ScreenSending);
   } else {
     prv_show_status("Sending...");
@@ -391,7 +391,7 @@ static void prv_scroll_click(ClickRecognizerRef recognizer, ClickHandler scroll)
       prv_pause_review();
       return;
     default:
-      prv_keep_sent_screen();
+      prv_restart_idle();
       scroll(recognizer, s_scroll_layer);
   }
 }
@@ -546,9 +546,6 @@ static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
   vibes_short_pulse();
   if (s_screen == ScreenSending) {
     prv_set_screen(ScreenSent);
-    if (!s_sent_touched) {
-      s_dismiss_timer = app_timer_register(SENT_DISMISS_MS, prv_exit_callback, NULL);
-    }
     return;
   }
   window_stack_pop_all(false);
@@ -677,7 +674,7 @@ static void prv_window_load(Window *window) {
 }
 
 static void prv_window_unload(Window *window) {
-  prv_cancel_dismiss();
+  prv_cancel_idle();
   prv_stop_bar_timer();
   action_bar_layer_destroy(s_action_bar);
   gbitmap_destroy(s_icon_check);
