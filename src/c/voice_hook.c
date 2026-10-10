@@ -21,12 +21,11 @@
 #define BAR_HEIGHT 20
 // The countdown is a rounded bar in the style of the firmware's progress bar,
 // drawn over the text just above the footer. It takes the same share of the
-// screen's width at its height on every watch, with chalk's proportions,
-// 82 x 6 px, plus a pixel for the outline on black-and-white watches.
+// screen's width at its height on every watch, and the system progress bar's
+// height.
 #define PILL_GAP 4
 #define PILL_WIDTH_PERCENT 60
-#define PILL_ASPECT_W 82
-#define PILL_ASPECT_H 6
+#define PILL_HEIGHT PBL_IF_COLOR_ELSE(6, 7)
 // Round screens leave a blank margin above the text so the first line is not
 // cut by the curve. The firmware's dictation review uses the status bar height
 // there; without a clock, chalk fits a line more with 8 px less, while gabbro
@@ -671,11 +670,9 @@ static void prv_window_load(Window *window) {
   screen_w = 2 * prv_isqrt(r * r - dy * dy);
 #endif
   int16_t pill_w = screen_w * PILL_WIDTH_PERCENT / 100;
-  int16_t pill_h = (pill_w * PILL_ASPECT_H + PILL_ASPECT_W / 2) / PILL_ASPECT_W +
-                   PBL_IF_COLOR_ELSE(0, 1);
-  int16_t bar_top = footer_top - PILL_GAP - pill_h;
+  int16_t bar_top = footer_top - PILL_GAP - PILL_HEIGHT;
   s_footer_y = footer_top - bar_top;
-  s_pill = GRect((bounds.size.w - pill_w) / 2, 0, pill_w, pill_h);
+  s_pill = GRect((bounds.size.w - pill_w) / 2, 0, pill_w, PILL_HEIGHT);
   s_bar_layer = layer_create(GRect(0, bar_top, bounds.size.w, bounds.size.h - bar_top));
   layer_set_update_proc(s_bar_layer, prv_bar_update);
   layer_set_hidden(s_bar_layer, true);
