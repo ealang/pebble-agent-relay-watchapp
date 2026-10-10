@@ -26,9 +26,11 @@
 #define PILL_HALO 4
 #define PILL_MARGIN PBL_IF_ROUND_ELSE(49, 10)
 #define BOTTOM_HEIGHT (BAR_HEIGHT + PILL_HEIGHT + 2 * PILL_HALO)
-// Round screens leave the firmware's status bar height blank above the text,
-// as its own dictation review does, so the first line is not cut by the curve.
-#define TOP_MARGIN PBL_IF_ROUND_ELSE(STATUS_BAR_LAYER_HEIGHT, 0)
+// Round screens leave a blank margin above the text so the first line is not
+// cut by the curve. The firmware's dictation review uses the status bar height
+// there; without a clock, chalk fits a line more with 8 px less, while gabbro
+// gains nothing short of a cramped first line.
+#define TOP_MARGIN PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 16, 0, 0, 0, STATUS_BAR_LAYER_HEIGHT)
 // On round screens the footer sits this far above the bottom, where the screen
 // is wide enough for its text, and the black runs on down to the edge.
 #define FOOTER_LIFT PBL_IF_ROUND_ELSE(12, 0)
@@ -350,11 +352,13 @@ static void prv_show_text(const char *text) {
   text_layer_set_size(s_transcript_layer, GSize(frame.size.w, TEXT_MAX_HEIGHT));
   GSize content = text_layer_get_content_size(s_transcript_layer);
   content.w = frame.size.w;
+  // Paging rounds the scroll range up to whole pages, so on round screens
+  // any room added under the text can tip it onto a blank extra page; the
+  // pages already keep every line whole.
+  int16_t scroll_h = frame.origin.y + content.h + PBL_IF_ROUND_ELSE(0, s_line_height / 2 + 4);
   content.h += s_line_height / 2;  // room for the last line's descenders
   text_layer_set_size(s_transcript_layer, content);
-  // The scroll layer ends at the footer, so the text needs no room under it.
-  scroll_layer_set_content_size(s_scroll_layer,
-                                GSize(content.w, frame.origin.y + content.h + 4));
+  scroll_layer_set_content_size(s_scroll_layer, GSize(content.w, scroll_h));
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
 }
 
