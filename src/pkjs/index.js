@@ -25,6 +25,8 @@ function hideSentScreenWhenManual() {
   });
 }
 
+// A failed push is only logged: the settings page has already closed, and
+// the stored values are pushed again at the next launch anyway.
 function sendSettings(settings) {
   var seconds = parseInt(settings.REVIEW_DELAY, 10);
   if (isNaN(seconds)) {
@@ -34,7 +36,9 @@ function sendSettings(settings) {
   if (settings.SENT_SCREEN !== undefined) {
     message.SENT_SCREEN = settings.SENT_SCREEN ? 1 : 0;
   }
-  Pebble.sendAppMessage(message);
+  Pebble.sendAppMessage(message, null, function (e) {
+    console.log('Settings did not reach the watch: ' + JSON.stringify(e && e.error));
+  });
 }
 
 Pebble.addEventListener('showConfiguration', function () {

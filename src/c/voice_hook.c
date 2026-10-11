@@ -9,23 +9,21 @@
 #define REVIEW_DELAY_DEFAULT_S 2
 #define REVIEW_DELAY_MAX_S 5
 #define REVIEW_DELAY_MANUAL 255
-// Keys 1 and 2 held boolean toggles in builds before the review screen; a
-// stale false there would read back as 0 ("send immediately"), so they are
-// retired and wiped rather than reused.
-#define PERSIST_KEY_LEGACY_CONFIRMATION 1
-#define PERSIST_KEY_LEGACY_ERROR_DIALOGS 2
+// Keys 1 and 2 were used by earlier builds and are not reused.
 #define PERSIST_KEY_REVIEW_DELAY 3
 #define PERSIST_KEY_SENT_SCREEN 4
 #define IDLE_EXIT_MS 30000
-#define BAR_TICK_MS 50
-#define BAR_HEIGHT 20
+// The footer is a black strip along the bottom of the transcript screens:
+// "Not yet sent", "Sending..." or "Sent".
+#define FOOTER_HEIGHT 20
 // The countdown is a rounded bar in the style of the firmware's progress bar,
 // drawn over the text just above the footer. It takes the same share of the
 // screen's width at its height on every watch, and the system progress bar's
 // height.
-#define PILL_GAP 4
-#define PILL_WIDTH_PERCENT 60
-#define PILL_HEIGHT PBL_IF_COLOR_ELSE(6, 7)
+#define BAR_TICK_MS 50
+#define BAR_GAP 4
+#define BAR_WIDTH_PERCENT 60
+#define BAR_HEIGHT PBL_IF_COLOR_ELSE(6, 7)
 // Round screens leave a blank margin above the text so the first line is not
 // cut by the curve. The firmware's dictation review uses the status bar height
 // there; without a clock, chalk fits a line more with 8 px less, while gabbro
@@ -45,9 +43,11 @@ static TextLayer *s_gate_text;
 static TextLayer *s_status_layer;
 static ScrollLayer *s_scroll_layer;
 static TextLayer *s_transcript_layer;
-static Layer *s_bar_layer;
-// The countdown bar, and the top of the footer strip, in s_bar_layer.
-static GRect s_pill;
+// Draws the footer strip and the countdown bar; see prv_footer_update.
+static Layer *s_footer_layer;
+// The countdown bar, and the top of the footer strip, in s_footer_layer's
+// coordinates.
+static GRect s_bar;
 static int16_t s_footer_y;
 // The standard action bar, as on the firmware's dictation review, with that
 // screen's own icons recoloured black. Its background is clear, so it is
@@ -87,9 +87,10 @@ typedef enum {
 
 static Screen s_screen;
 static AppTimer *s_bar_timer;
-static uint32_t s_bar_elapsed_ms;
-// Fixed when the countdown starts, so a setting saved meanwhile cannot
-// change it (or make it zero) partway through.
+// The countdown is measured from the clock rather than counted in ticks, so
+// timer latency does not stretch it. Its length is fixed when it starts, so a
+// setting saved meanwhile cannot change it (or make it zero) partway through.
+static uint64_t s_bar_start_ms;
 static uint32_t s_bar_total_ms;
 // Whether an unconfirmed send (countdown ran out, or no review at all) leaves
 // the transcript up. Set from the phone's settings page.
@@ -98,14 +99,15 @@ static bool s_sent_screen_enabled = true;
 // no-speech screens, so a forgotten review does not stay open; nothing is
 // sent. Failures stay up until Back so they can be read.
 static AppTimer *s_idle_timer;
+// Set once the app has asked to close, so a callback that lands during the
+// exit animation does not touch layers that are being torn down.
+static bool s_exiting;
 
 // The icons currently on the action bar, so an unchanged icon is not
 // animated in again.
 static const GBitmap *s_bar_icons[NUM_BUTTONS];
 
-#if defined(PBL_MICROPHONE)
 static DictationSession *s_dictation;
-#endif
 
 // The firmware's body text font for the watch's Text Size setting, as used
 // by notifications and its own dictation screen (TextStyleFont_Body). Medium
@@ -127,8 +129,21 @@ static int16_t prv_measure_line_height(GFont font) {
                                                GTextOverflowModeWordWrap, GTextAlignmentLeft).h;
 }
 
-static void prv_exit_callback(void *context) {
-  window_stack_pop_all(false);
+// The current time in milliseconds, for timing the countdown.
+static uint64_t prv_now_ms(void) {
+  time_t seconds;
+  uint16_t ms;
+  time_ms(&seconds, &ms);
+  return (uint64_t) seconds * 1000 + ms;
+}
+
+static void prv_exit(bool animated) {
+  s_exiting = true;
+  window_stack_pop_all(animated);
+}
+
+static void prv_idle_exit(void *context) {
+  prv_exit(false);
 }
 
 static void prv_stop_bar_timer(void) {
@@ -149,7 +164,7 @@ static void prv_cancel_idle(void) {
 static void prv_restart_idle(void) {
   prv_cancel_idle();
   if (s_screen == ScreenReview || s_screen == ScreenSent || s_screen == ScreenNoSpeech) {
-    s_idle_timer = app_timer_register(IDLE_EXIT_MS, prv_exit_callback, NULL);
+    s_idle_timer = app_timer_register(IDLE_EXIT_MS, prv_idle_exit, NULL);
   }
 }
 
@@ -207,8 +222,8 @@ static void prv_set_screen(Screen screen) {
   layer_set_hidden(text_layer_get_layer(s_status_layer), !status);
   layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), status);
   layer_set_hidden(action_bar_layer_get_layer(s_action_bar), status);
-  layer_set_hidden(s_bar_layer, screen != ScreenCountdown && !prv_footer_text());
-  layer_mark_dirty(s_bar_layer);
+  layer_set_hidden(s_footer_layer, screen != ScreenCountdown && !prv_footer_text());
+  layer_mark_dirty(s_footer_layer);
   prv_update_action_bar();
 }
 
@@ -302,7 +317,13 @@ static int32_t prv_isqrt(int32_t n) {
 }
 #endif
 
-static void prv_bar_update(Layer *layer, GContext *ctx) {
+// Milliseconds since the countdown started, capped at its length.
+static uint32_t prv_bar_elapsed_ms(void) {
+  uint64_t elapsed = prv_now_ms() - s_bar_start_ms;
+  return elapsed < s_bar_total_ms ? (uint32_t) elapsed : s_bar_total_ms;
+}
+
+static void prv_footer_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   const char *footer = prv_footer_text();
   if (footer) {
@@ -311,7 +332,7 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
     graphics_fill_rect(ctx, strip, 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
     strip.origin.y += 1;
-    strip.size.h = BAR_HEIGHT;
+    strip.size.h = FOOTER_HEIGHT;
     graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), strip,
                        GTextOverflowModeFill, GTextAlignmentCenter, NULL);
   }
@@ -320,37 +341,37 @@ static void prv_bar_update(Layer *layer, GContext *ctx) {
   }
   // Colours as on the firmware's dictation screen: black on dark grey, or an
   // outlined white track on black-and-white watches.
-  GRect pill = s_pill;
-  const int16_t radius = pill.size.h / 2;
+  GRect bar = s_bar;
+  const int16_t radius = bar.size.h / 2;
   graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorWhite));
-  graphics_fill_rect(ctx, pill, radius, GCornersAll);
+  graphics_fill_rect(ctx, bar, radius, GCornersAll);
   graphics_context_set_fill_color(ctx, GColorBlack);
-  GRect filled = pill;
-  filled.size.w = pill.size.w * s_bar_elapsed_ms / s_bar_total_ms;
+  GRect filled = bar;
+  filled.size.w = bar.size.w * prv_bar_elapsed_ms() / s_bar_total_ms;
   if (filled.size.w > 0) {
     graphics_fill_rect(ctx, filled, filled.size.w < 2 * radius ? filled.size.w / 2 : radius,
                        GCornersAll);
   }
 #if !defined(PBL_COLOR)
   graphics_context_set_stroke_color(ctx, GColorBlack);
-  graphics_draw_round_rect(ctx, pill, radius);
+  graphics_draw_round_rect(ctx, bar, radius);
 #endif
 }
 
 static void prv_bar_tick(void *context) {
-  s_bar_elapsed_ms += BAR_TICK_MS;
-  if (s_bar_elapsed_ms >= s_bar_total_ms) {
+  if (prv_bar_elapsed_ms() >= s_bar_total_ms) {
     s_bar_timer = NULL;
     prv_send_transcript(s_sent_screen_enabled);
     return;
   }
-  layer_mark_dirty(s_bar_layer);
+  layer_mark_dirty(s_footer_layer);
   s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
 }
 
-// Lays out text in the scrollable area; the caller then picks the screen.
-static void prv_show_text(const char *text) {
-  text_layer_set_text(s_transcript_layer, text);
+// Lays out the transcript in the scrollable area; the caller then picks the
+// screen.
+static void prv_show_transcript(void) {
+  text_layer_set_text(s_transcript_layer, s_transcript);
 
   // The firmware measures text within the layer's current bounds, so grow the
   // layer back to its full measuring height first; otherwise a retake that is
@@ -369,16 +390,12 @@ static void prv_show_text(const char *text) {
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
 }
 
-static void prv_show_transcript(void) {
-  prv_show_text(s_transcript);
-}
-
 static void prv_show_review(void) {
   prv_show_transcript();
   if (s_review_delay_s == REVIEW_DELAY_MANUAL) {
     prv_set_screen(ScreenReview);
   } else {
-    s_bar_elapsed_ms = 0;
+    s_bar_start_ms = prv_now_ms();
     s_bar_total_ms = s_review_delay_s * 1000;
     prv_set_screen(ScreenCountdown);
     s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
@@ -422,7 +439,7 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
       break;
     case ScreenSent:
     case ScreenNoSpeech:
-      window_stack_pop_all(false);
+      prv_exit(false);
       break;
     default:
       break;
@@ -440,7 +457,7 @@ static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
       prv_start_dictation();
       break;
     default:
-      window_stack_pop_all(true);
+      prv_exit(true);
       break;
   }
 }
@@ -454,7 +471,6 @@ static void prv_click_config(void *context) {
 
 // --- Dictation and AppMessage ------------------------------------------------
 
-#if defined(PBL_MICROPHONE)
 // One message per firmware status, so a report from the field pins down
 // which step failed. System error dialogs are off, so the first error ends
 // the session instead of the firmware's own retry loop.
@@ -497,6 +513,9 @@ static void prv_no_speech(void) {
 
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
                                    char *transcription, void *context) {
+  if (s_exiting) {
+    return;
+  }
   if (status == DictationSessionStatusSuccess) {
     if (prv_is_blank(transcription)) {
       prv_no_speech();
@@ -522,26 +541,23 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
   }
   if (status == DictationSessionStatusFailureTranscriptionRejected) {
     // The user backed out; nothing to report.
-    window_stack_pop_all(false);
+    prv_exit(false);
     return;
   }
   prv_fail(prv_dictation_failure_text(status));
 }
-#endif
 
 // Shows our placeholder, then asks the firmware to push its voice screen on
 // top. If that refuses (Bluetooth down at this instant), no callback ever
 // comes, so the refusal is reported here rather than left as "Loading...".
 static void prv_start_dictation(void) {
   prv_show_status("Loading...");
-#if defined(PBL_MICROPHONE)
   DictationSessionStatus status = dictation_session_start(s_dictation);
   if (status != DictationSessionStatusSuccess) {
     char text[STATUS_MAX];
     snprintf(text, sizeof(text), "Can't start. %s", prv_dictation_failure_text(status));
     prv_fail(text);
   }
-#endif
 }
 
 // The companion app Acks once the transcript is durably queued on the phone;
@@ -549,15 +565,21 @@ static void prv_start_dictation(void) {
 // needs no more confirmation, so the app exits at once. An auto-send keeps the
 // transcript up as the sent screen, so it can be checked and redone.
 static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
+  if (s_exiting) {
+    return;
+  }
   vibes_short_pulse();
   if (s_screen == ScreenSending) {
     prv_set_screen(ScreenSent);
     return;
   }
-  window_stack_pop_all(false);
+  prv_exit(false);
 }
 
 static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  if (s_exiting) {
+    return;
+  }
   prv_fail(prv_app_message_text(reason));
 }
 
@@ -567,9 +589,7 @@ static bool prv_review_delay_is_valid(int32_t seconds) {
   return (seconds >= 0 && seconds <= REVIEW_DELAY_MAX_S) || seconds == REVIEW_DELAY_MANUAL;
 }
 
-static void prv_load_review_delay(void) {
-  persist_delete(PERSIST_KEY_LEGACY_CONFIRMATION);
-  persist_delete(PERSIST_KEY_LEGACY_ERROR_DIALOGS);
+static void prv_load_settings(void) {
   if (persist_exists(PERSIST_KEY_SENT_SCREEN)) {
     s_sent_screen_enabled = persist_read_bool(PERSIST_KEY_SENT_SCREEN);
   }
@@ -581,10 +601,10 @@ static void prv_load_review_delay(void) {
   }
 }
 
-// The phone pushes the setting at every launch and whenever it is saved.
-// The phone resends the settings at every launch, so a value is written only
-// when it changed (or was never stored, so a later change of default cannot
-// override the user's choice), sparing the flash a write per launch.
+// The phone pushes the settings at every launch and whenever they are saved.
+// A value is written only when it changed, or was never stored (so a later
+// change of default cannot override the user's choice), sparing the flash a
+// write per launch.
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *sent_screen = dict_find(iter, MESSAGE_KEY_SENT_SCREEN);
   if (sent_screen) {
@@ -636,7 +656,7 @@ static void prv_window_load(Window *window) {
                                      bounds.size.w - 4 - (ACTION_BAR_WIDTH - 6));
   // The text area runs from the top margin down to the footer strip; the
   // countdown bar floats over its bottom edge.
-  int16_t footer_top = bounds.size.h - FOOTER_LIFT - BAR_HEIGHT;
+  int16_t footer_top = bounds.size.h - FOOTER_LIFT - FOOTER_HEIGHT;
   s_scroll_layer = scroll_layer_create(
       GRect(0, TOP_MARGIN, bounds.size.w, footer_top - TOP_MARGIN));
   scroll_layer_set_shadow_hidden(s_scroll_layer, true);
@@ -663,17 +683,17 @@ static void prv_window_load(Window *window) {
   int16_t screen_w = bounds.size.w;
 #if defined(PBL_ROUND)
   int32_t r = bounds.size.w / 2;
-  int32_t dy = footer_top - PILL_GAP - bounds.size.h / 2;
+  int32_t dy = footer_top - BAR_GAP - bounds.size.h / 2;
   screen_w = 2 * prv_isqrt(r * r - dy * dy);
 #endif
-  int16_t pill_w = screen_w * PILL_WIDTH_PERCENT / 100;
-  int16_t bar_top = footer_top - PILL_GAP - PILL_HEIGHT;
-  s_footer_y = footer_top - bar_top;
-  s_pill = GRect((bounds.size.w - pill_w) / 2, 0, pill_w, PILL_HEIGHT);
-  s_bar_layer = layer_create(GRect(0, bar_top, bounds.size.w, bounds.size.h - bar_top));
-  layer_set_update_proc(s_bar_layer, prv_bar_update);
-  layer_set_hidden(s_bar_layer, true);
-  layer_add_child(root, s_bar_layer);
+  int16_t bar_w = screen_w * BAR_WIDTH_PERCENT / 100;
+  int16_t layer_top = footer_top - BAR_GAP - BAR_HEIGHT;
+  s_footer_y = footer_top - layer_top;
+  s_bar = GRect((bounds.size.w - bar_w) / 2, 0, bar_w, BAR_HEIGHT);
+  s_footer_layer = layer_create(GRect(0, layer_top, bounds.size.w, bounds.size.h - layer_top));
+  layer_set_update_proc(s_footer_layer, prv_footer_update);
+  layer_set_hidden(s_footer_layer, true);
+  layer_add_child(root, s_footer_layer);
 
   s_icon_check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
   s_icon_up = gbitmap_create_with_resource(RESOURCE_ID_ICON_UP);
@@ -696,7 +716,7 @@ static void prv_window_unload(Window *window) {
   gbitmap_destroy(s_icon_check);
   gbitmap_destroy(s_icon_up);
   gbitmap_destroy(s_icon_down);
-  layer_destroy(s_bar_layer);
+  layer_destroy(s_footer_layer);
   text_layer_destroy(s_transcript_layer);
   scroll_layer_destroy(s_scroll_layer);
   text_layer_destroy(s_status_layer);
@@ -711,7 +731,6 @@ static void prv_start(void) {
   });
   window_stack_push(s_window, true);
 
-#if defined(PBL_MICROPHONE)
   s_dictation = dictation_session_create(0, prv_dictation_callback, NULL);
   if (s_dictation) {
     // Our review screen replaces the system's confirmation and error dialogs.
@@ -725,9 +744,6 @@ static void prv_start(void) {
   } else {
     prv_fail("Dictation unavailable: phone app lacks voice support, or out of memory");
   }
-#else
-  prv_fail("This watch has no microphone");
-#endif
 }
 
 // --- Phone launch -------------------------------------------------------------
@@ -783,7 +799,7 @@ static void prv_init(void) {
   // they ask: dragging scrolls the transcript, and the action bar's icons
   // can be tapped, as on the system screens. Needs SDK 4.33 or later.
   app_touch_navigation_enable(true);
-  prv_load_review_delay();
+  prv_load_settings();
 
   app_message_register_inbox_received(prv_inbox_received);
   app_message_register_outbox_sent(prv_outbox_sent);
@@ -798,11 +814,9 @@ static void prv_init(void) {
 }
 
 static void prv_deinit(void) {
-#if defined(PBL_MICROPHONE)
   if (s_dictation) {
     dictation_session_destroy(s_dictation);
   }
-#endif
   if (s_window) {
     window_destroy(s_window);
   }
