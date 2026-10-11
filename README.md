@@ -6,9 +6,9 @@ its Android companion app. Open the app, speak, done.
 ## What it does
 
 1. On launch, a dictation session starts immediately.
-2. The transcript appears on a review screen, in quotes, with a bar along
-   the bottom counting down (two seconds by default). Do nothing and it
-   sends on its own.
+2. The transcript appears on a review screen, with a bar along the bottom
+   counting down (two seconds by default). Do nothing and it sends on its
+   own.
 3. The transcript is sent to the phone via AppMessage (key `TRANSCRIPT`).
 4. The Pebble phone app routes the message to the declared companion app,
    [pebble-telegram-webhook](https://github.com/ealang/pebble-telegram-webhook)
@@ -66,8 +66,6 @@ When the app is launched from the phone (the "Start app" button, an
 install, or opening the settings page), it shows `Press to continue` and
 records nothing until you press Up, Select or Down (or tap or swipe up or
 down); Back exits. After that it behaves exactly as a launch from the watch.
-
-Dictated text is always shown in quotes; status messages are not.
 
 ## Settings
 

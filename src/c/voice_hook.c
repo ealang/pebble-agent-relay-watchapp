@@ -59,7 +59,6 @@ static GBitmap *s_icon_down;
 
 static char s_status_text[STATUS_MAX];
 static char s_transcript[TRANSCRIPT_MAX];
-static char s_quoted[TRANSCRIPT_MAX + 8];
 
 // One line of the chosen font, measured at load. Everything sized to the text
 // (status box, descender padding, scroll step) derives from this.
@@ -230,7 +229,6 @@ static void prv_scroll_offset_changed(ScrollLayer *scroll_layer, void *context) 
   prv_update_action_bar();
 }
 
-// Status text is unquoted; only dictated speech is shown in quotes.
 static void prv_show_status(const char *text) {
   strncpy(s_status_text, text, STATUS_MAX - 1);
   s_status_text[STATUS_MAX - 1] = '\0';
@@ -372,8 +370,7 @@ static void prv_show_text(const char *text) {
 }
 
 static void prv_show_transcript(void) {
-  snprintf(s_quoted, sizeof(s_quoted), "“%s”", s_transcript);
-  prv_show_text(s_quoted);
+  prv_show_text(s_transcript);
 }
 
 static void prv_show_review(void) {
