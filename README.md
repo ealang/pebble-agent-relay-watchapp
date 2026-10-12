@@ -55,9 +55,9 @@ buttons do on that screen. On watches with a touchscreen, dragging scrolls
 the text and the icons can be tapped, provided touch navigation is on in
 the watch's settings.
 
-- **Countdown**: a bar along the bottom fills, then the message sends. No
-  icons are shown; Up, Down, Select or a drag stop it and leave it on the
-  review. Back records again.
+- **Countdown**: a bar along the bottom fills, then the message sends.
+  Select (check icon) sends at once. Up, Down or a drag stop the countdown
+  and leave it on the review. Back records again.
 - **Review** (`Not yet sent`): Up / Down scroll, with arrows when there is
   more text that way. Select (check icon) sends; the footer reads
   `Sending...` and the app exits on the Ack. Back discards the transcript

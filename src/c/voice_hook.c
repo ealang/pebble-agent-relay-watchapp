@@ -222,7 +222,7 @@ static void prv_set_bar_icon(ButtonId button, const GBitmap *icon) {
 // appear when there is more text that way.
 static void prv_update_action_bar(void) {
   bool counting = prv_counting();
-  bool can_send = s_screen == ScreenReview && !counting && s_send == SendNotSent;
+  bool can_send = s_screen == ScreenReview && s_send == SendNotSent;
   prv_set_bar_icon(BUTTON_ID_SELECT, can_send ? s_icon_check : NULL);
   GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
   int16_t visible_h = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
@@ -550,9 +550,8 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
   switch (s_screen) {
     case ScreenReview:
-      if (prv_counting()) {
-        prv_pause_review();
-      } else if (s_send == SendNotSent) {
+      // During the countdown this sends at once rather than pausing.
+      if (s_send == SendNotSent) {
         prv_send(true);
       } else if (s_send == SendSent) {
         prv_exit(false);
