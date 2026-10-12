@@ -89,6 +89,9 @@ The phone app's settings page has two options:
   Select stays on screen as the Sent screen, or the app exits on the Ack.
   Hidden when sending only on Select, since then every send is a press.
 
+The Save button only appears once a setting differs from what was saved,
+so an unsaved change is visible at a glance.
+
 The settings are persisted on the watch, so they add no startup delay. A
 save reaches the watch at once if the app is open and applies from the
 next recording; a countdown already running keeps its length.
