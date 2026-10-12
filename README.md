@@ -57,7 +57,8 @@ the watch's settings.
 
 - **Countdown**: a bar along the bottom fills, then the message sends.
   Select (check icon) sends at once. Up, Down or a drag stop the countdown
-  and leave it on the review. Back records again.
+  and scroll in the same press, with arrows when there is more text that
+  way. Back records again.
 - **Review** (`Not yet sent`): Up / Down scroll, with arrows when there is
   more text that way. Select (check icon) sends; the footer reads
   `Sending...` and the app exits on the Ack. Back discards the transcript

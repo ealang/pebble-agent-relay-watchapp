@@ -221,15 +221,13 @@ static void prv_set_bar_icon(ButtonId button, const GBitmap *icon) {
 // all, since every button there only stops it. Otherwise Up/Down arrows
 // appear when there is more text that way.
 static void prv_update_action_bar(void) {
-  bool counting = prv_counting();
   bool can_send = s_screen == ScreenReview && s_send == SendNotSent;
   prv_set_bar_icon(BUTTON_ID_SELECT, can_send ? s_icon_check : NULL);
   GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
   int16_t visible_h = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
   int16_t content_h = scroll_layer_get_content_size(s_scroll_layer).h;
-  prv_set_bar_icon(BUTTON_ID_UP, !counting && offset.y < 0 ? s_icon_up : NULL);
-  prv_set_bar_icon(BUTTON_ID_DOWN,
-                   !counting && offset.y + content_h > visible_h ? s_icon_down : NULL);
+  prv_set_bar_icon(BUTTON_ID_UP, offset.y < 0 ? s_icon_up : NULL);
+  prv_set_bar_icon(BUTTON_ID_DOWN, offset.y + content_h > visible_h ? s_icon_down : NULL);
 }
 
 // The strip's text on the review screen; the countdown draws its bar above it.
@@ -522,12 +520,10 @@ static void prv_leave_send_failed(void) {
 static void prv_scroll_click(ClickRecognizerRef recognizer, ClickHandler scroll) {
   switch (s_screen) {
     case ScreenReview:
-      if (prv_counting()) {
-        prv_pause_review();
-      } else {
-        prv_restart_idle();
-        scroll(recognizer, s_scroll_layer);
-      }
+      // During the countdown this pauses it and scrolls in the same press.
+      prv_pause_review();
+      prv_restart_idle();
+      scroll(recognizer, s_scroll_layer);
       return;
     case ScreenSendFailed:
       prv_leave_send_failed();
