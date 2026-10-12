@@ -408,6 +408,10 @@ static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason,
     return;
   }
   if (reason == APP_MSG_SEND_TIMEOUT && s_send_attempts < SEND_ATTEMPTS) {
+    // TODO(testing): remove before release. The retry should be silent; the
+    // buzz is here so a timeout that the retry recovers from is still
+    // noticed while the companion's slow-Ack behaviour is being tested.
+    vibes_double_pulse();
     prv_send_now();
     return;
   }
