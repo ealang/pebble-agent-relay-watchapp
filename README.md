@@ -12,6 +12,9 @@ its Android companion app. Open the app, speak, done.
 3. The transcript is sent to the phone via AppMessage (key `TRANSCRIPT`),
    with the time it was captured (key `RECORDED_AT`, seconds since the
    epoch from the watch clock) for the companion to recognise a repeat.
+   The key numbers are pinned in `package.json` (`TRANSCRIPT` 10000,
+   `RECORDED_AT` 10003) so a companion built against them keeps working
+   if keys are later added or reordered.
 4. The Pebble phone app routes the message to the declared companion app,
    [pebble-telegram-webhook](https://github.com/ealang/pebble-telegram-webhook)
    (`io.github.ealang.pebbletelegramagent`), which queues it durably and Acks.

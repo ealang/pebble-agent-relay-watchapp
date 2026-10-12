@@ -24,12 +24,12 @@
     "watchapp": {
       "watchface": false
     },
-    "messageKeys": [
-      "TRANSCRIPT",
-      "REVIEW_DELAY",
-      "SENT_SCREEN",
-      "RECORDED_AT"
-    ],
+    "messageKeys": {
+      "TRANSCRIPT": 10000,
+      "REVIEW_DELAY": 10001,
+      "SENT_SCREEN": 10002,
+      "RECORDED_AT": 10003
+    },
     "companionApp": {
       "android": {
         "apps": [
