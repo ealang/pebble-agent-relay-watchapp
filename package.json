@@ -27,7 +27,8 @@
     "messageKeys": [
       "TRANSCRIPT",
       "REVIEW_DELAY",
-      "SENT_SCREEN"
+      "SENT_SCREEN",
+      "RECORDED_AT"
     ],
     "companionApp": {
       "android": {

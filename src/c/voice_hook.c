@@ -13,7 +13,10 @@
 #define PERSIST_KEY_REVIEW_DELAY 3
 #define PERSIST_KEY_SENT_SCREEN 4
 #define IDLE_EXIT_MS 30000
-// The footer is a black strip along the bottom of the transcript screens:
+// How many times a transcript is sent before the phone's silence is reported.
+// The firmware gives each send 10 s for the phone's Ack.
+#define SEND_ATTEMPTS 2
+// The footer is a black strip along the bottom of the review screen:
 // "Not yet sent", "Sending..." or "Sent".
 #define FOOTER_HEIGHT 20
 // The countdown is a rounded bar in the style of the firmware's progress bar,
@@ -67,37 +70,65 @@ static int16_t s_line_height;
 static uint32_t s_review_delay_s = REVIEW_DELAY_DEFAULT_S;
 
 // Every screen is the same window: either centered status text, or the
-// scrollable transcript with the action bar and a strip along the bottom.
-// The screen decides what the strip shows and what each button does.
+// review screen, which is the scrollable transcript with the action bar and
+// a strip along the bottom. What the window shows is derived in prv_render
+// from three pieces of state: the screen, the send, and the countdown.
 typedef enum {
-  // Centered text: "Loading...", "Sending...", or a failure. Back exits.
-  ScreenStatus,
-  // The transcript with a filling progress bar; when it fills, it sends. Any
-  // button but Back stops it, turning it into ScreenReview.
-  ScreenCountdown,
-  // The transcript, "Not yet sent". Select sends, Back records again.
-  ScreenReview,
-  // A countdown ran out and sent: the transcript stays up with "Sending..."
-  // and then "Sent".
-  ScreenSending,
-  ScreenSent,
-  // Dictation heard nothing: a placeholder, no strip. Back records again.
+  // "Loading..." under the firmware's dictation UI. Back exits.
+  ScreenLoading,
+  // Dictation heard nothing: a placeholder. Back records again, Select exits.
   ScreenNoSpeech,
+  // Why dictation failed. Back exits.
+  ScreenDictationFailed,
+  // The transcript. The footer shows the send's state; Select sends, or
+  // stops a running countdown; Back records again, abandoning any send.
+  ScreenReview,
+  // Why the send failed. Any button returns to the review, to send again.
+  ScreenSendFailed,
 } Screen;
 
 static Screen s_screen;
+
+// The send: NotSent until prv_send, InFlight until the phone answers, Sent
+// after its Ack. A failure shows ScreenSendFailed and the state goes back to
+// NotSent on the way out of it.
+typedef enum {
+  SendNotSent,
+  SendInFlight,
+  SendSent,
+} SendState;
+
+static SendState s_send;
+// How many times the current send has been put in the outbox.
+static uint8_t s_send_attempts;
+// A send the user chose with Select needs no more confirmation, so the app
+// exits on the Ack. An auto-send stays up as the sent screen if that
+// setting is on.
+static bool s_send_exit_on_ack;
+// The outbox callbacks carry nothing that says which send they are for. Each
+// send gets a token, and the token of the message in the outbox is kept; a
+// callback whose token is stale belongs to a send that was abandoned by Back,
+// and only frees the outbox for the current one. A send cannot be cancelled,
+// so an abandoned one may still reach the phone.
+static uint8_t s_send_token;
+static uint8_t s_outbox_token;
+// When the transcript was captured, sent with it as the companion's dedupe
+// key: every attempt to send the same transcript carries the same value.
+static uint32_t s_recorded_at;
+
+// The countdown: a timer that calls prv_send once when the bar fills, and is
+// cancelled by any input. It is measured from the clock rather than counted
+// in ticks, so timer latency does not stretch it. Its length is fixed when it
+// starts, so a setting saved meanwhile cannot change it partway through.
 static AppTimer *s_bar_timer;
-// The countdown is measured from the clock rather than counted in ticks, so
-// timer latency does not stretch it. Its length is fixed when it starts, so a
-// setting saved meanwhile cannot change it (or make it zero) partway through.
 static uint64_t s_bar_start_ms;
 static uint32_t s_bar_total_ms;
 // Whether an unconfirmed send (countdown ran out, or no review at all) leaves
 // the transcript up. Set from the phone's settings page.
 static bool s_sent_screen_enabled = true;
-// Closes the app after IDLE_EXIT_MS without input on the review, sent and
-// no-speech screens, so a forgotten review does not stay open; nothing is
-// sent. Failures stay up until Back so they can be read.
+// Closes the app after IDLE_EXIT_MS without input where nothing is about to
+// happen: a paused or sent review, or no speech. Nothing is sent. Failures
+// stay up until a button so they can be read.
 static AppTimer *s_idle_timer;
 // Set once the app has asked to close, so a callback that lands during the
 // exit animation does not touch layers that are being torn down.
@@ -146,7 +177,11 @@ static void prv_idle_exit(void *context) {
   prv_exit(false);
 }
 
-static void prv_stop_bar_timer(void) {
+static bool prv_counting(void) {
+  return s_bar_timer != NULL;
+}
+
+static void prv_countdown_cancel(void) {
   if (s_bar_timer) {
     app_timer_cancel(s_bar_timer);
     s_bar_timer = NULL;
@@ -160,10 +195,11 @@ static void prv_cancel_idle(void) {
   }
 }
 
-// Starts the idle timeout over; called on every screen change and input.
+// Starts the idle timeout over; called on every state change and input.
 static void prv_restart_idle(void) {
   prv_cancel_idle();
-  if (s_screen == ScreenReview || s_screen == ScreenSent || s_screen == ScreenNoSpeech) {
+  bool idle_review = s_screen == ScreenReview && !prv_counting() && s_send != SendInFlight;
+  if (idle_review || s_screen == ScreenNoSpeech) {
     s_idle_timer = app_timer_register(IDLE_EXIT_MS, prv_idle_exit, NULL);
   }
 }
@@ -180,13 +216,14 @@ static void prv_set_bar_icon(ButtonId button, const GBitmap *icon) {
   }
 }
 
-// The check appears only when Select would send: a paused or manual review,
-// not the countdown or after a send. The countdown shows no icons at all,
-// since every button there only stops it. Otherwise Up/Down arrows appear
-// when there is more text that way.
+// The check appears only when Select would send: a paused review, not the
+// countdown or once a send is under way. The countdown shows no icons at
+// all, since every button there only stops it. Otherwise Up/Down arrows
+// appear when there is more text that way.
 static void prv_update_action_bar(void) {
-  bool counting = s_screen == ScreenCountdown;
-  prv_set_bar_icon(BUTTON_ID_SELECT, s_screen == ScreenReview ? s_icon_check : NULL);
+  bool counting = prv_counting();
+  bool can_send = s_screen == ScreenReview && !counting && s_send == SendNotSent;
+  prv_set_bar_icon(BUTTON_ID_SELECT, can_send ? s_icon_check : NULL);
   GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
   int16_t visible_h = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer)).size.h;
   int16_t content_h = scroll_layer_get_content_size(s_scroll_layer).h;
@@ -195,42 +232,60 @@ static void prv_update_action_bar(void) {
                    !counting && offset.y + content_h > visible_h ? s_icon_down : NULL);
 }
 
-// The strip's text on each screen; the countdown draws its bar instead.
+// The strip's text on the review screen; the countdown draws its bar above it.
 static const char *prv_footer_text(void) {
-  switch (s_screen) {
-    case ScreenCountdown:
-    case ScreenReview:
-      return "Not yet sent";
-    case ScreenSending:
-      return "Sending...";
-    case ScreenSent:
-      return "Sent";
-    default:
-      return NULL;
+  if (s_screen != ScreenReview) {
+    return NULL;
   }
+  switch (s_send) {
+    case SendNotSent:
+      return "Not yet sent";
+    case SendInFlight:
+      return "Sending...";
+    case SendSent:
+      return "Sent";
+  }
+  return NULL;
 }
 
-// Switches what the window shows. The countdown timer runs only on the
-// countdown.
-static void prv_set_screen(Screen screen) {
-  s_screen = screen;
-  prv_restart_idle();
-  if (screen != ScreenCountdown) {
-    prv_stop_bar_timer();
-  }
-  bool status = screen == ScreenStatus || screen == ScreenNoSpeech;
-  layer_set_hidden(text_layer_get_layer(s_status_layer), !status);
-  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), status);
-  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), status);
-  layer_set_hidden(s_footer_layer, screen != ScreenCountdown && !prv_footer_text());
+// Brings the window into line with the state. Nothing else touches what the
+// layers show, so every transition is a state change followed by this.
+static void prv_render(void) {
+  bool review = s_screen == ScreenReview;
+  layer_set_hidden(text_layer_get_layer(s_status_layer), review);
+  layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), !review);
+  layer_set_hidden(action_bar_layer_get_layer(s_action_bar), !review);
+  layer_set_hidden(s_footer_layer, !review);
   layer_mark_dirty(s_footer_layer);
   prv_update_action_bar();
+  prv_restart_idle();
+}
+
+static void prv_set_screen(Screen screen) {
+  s_screen = screen;
+  prv_render();
+}
+
+static void prv_show_status(Screen screen, const char *text) {
+  strncpy(s_status_text, text, STATUS_MAX - 1);
+  s_status_text[STATUS_MAX - 1] = '\0';
+  text_layer_set_text(s_status_layer, s_status_text);
+  prv_set_screen(screen);
+}
+
+// Every failure ends here: a double vibe, and the reason stays on screen
+// until a button so it can actually be read. Each message names one
+// condition.
+static void prv_fail(Screen screen, const char *text) {
+  vibes_double_pulse();
+  prv_show_status(screen, text);
 }
 
 // Any interaction cancels the auto-send.
 static void prv_pause_review(void) {
-  if (s_screen == ScreenCountdown) {
-    prv_set_screen(ScreenReview);
+  if (prv_counting()) {
+    prv_countdown_cancel();
+    prv_render();
   }
 }
 
@@ -244,35 +299,19 @@ static void prv_scroll_offset_changed(ScrollLayer *scroll_layer, void *context) 
   prv_update_action_bar();
 }
 
-static void prv_show_status(const char *text) {
-  strncpy(s_status_text, text, STATUS_MAX - 1);
-  s_status_text[STATUS_MAX - 1] = '\0';
-  text_layer_set_text(s_status_layer, s_status_text);
-  prv_set_screen(ScreenStatus);
-}
-
-// Every failure ends here: a double vibe, and the reason stays on screen
-// until Back so it can actually be read. Each message names one condition.
-static void prv_fail(const char *text) {
-  vibes_double_pulse();
-  prv_show_status(text);
-}
+// --- Send --------------------------------------------------------------------
 
 static const char *prv_app_message_text(AppMessageResult result) {
   static char buf[32];
   switch (result) {
     case APP_MSG_SEND_TIMEOUT:
-      // The firmware waits 10 s for the phone's Ack and ignores a late one,
-      // so the companion may well have queued the message.
-      return "No reply from phone in 10 s (may have sent)";
+      return "No reply from phone";
     case APP_MSG_SEND_REJECTED:
       return "Phone rejected the message";
     case APP_MSG_NOT_CONNECTED:
       return "Phone not connected";
     case APP_MSG_APP_NOT_RUNNING:
       return "Phone app not running";
-    case APP_MSG_BUSY:
-      return "Previous send still pending";
     case APP_MSG_BUFFER_OVERFLOW:
       return "Message too large";
     default:
@@ -281,28 +320,98 @@ static const char *prv_app_message_text(AppMessageResult result) {
   }
 }
 
-// An auto-send keeps the transcript on screen; any other send shows a status.
-static void prv_send_transcript(bool linger) {
-  if (linger) {
-    prv_set_screen(ScreenSending);
-  } else {
-    prv_show_status("Sending...");
-  }
+static void prv_send_failed(const char *text) {
+  s_send = SendNotSent;
+  prv_fail(ScreenSendFailed, text);
+}
 
+// Puts the transcript in the outbox. If an abandoned send is still waiting
+// for its answer, the outbox is busy; its callback starts this one.
+static void prv_send_now(void) {
   DictionaryIterator *out;
   AppMessageResult result = app_message_outbox_begin(&out);
-  if (result != APP_MSG_OK) {
-    prv_fail(prv_app_message_text(result));
+  if (result == APP_MSG_BUSY) {
     return;
   }
-  if (dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript) != DICT_OK) {
-    prv_fail("Transcript too large for outbox");
+  if (result != APP_MSG_OK) {
+    prv_send_failed(prv_app_message_text(result));
+    return;
+  }
+  if (dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript) != DICT_OK ||
+      dict_write_uint32(out, MESSAGE_KEY_RECORDED_AT, s_recorded_at) != DICT_OK) {
+    prv_send_failed("Transcript too large for outbox");
     return;
   }
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
-    prv_fail(prv_app_message_text(result));
+    prv_send_failed(prv_app_message_text(result));
+    return;
   }
+  s_outbox_token = s_send_token;
+  s_send_attempts++;
+}
+
+// Starts sending the transcript on screen. The review stays up, its footer
+// reading "Sending...".
+static void prv_send(bool chosen_with_select) {
+  s_send = SendInFlight;
+  s_send_token++;
+  s_send_attempts = 0;
+  s_send_exit_on_ack = chosen_with_select || !s_sent_screen_enabled;
+  prv_countdown_cancel();
+  prv_render();
+  prv_send_now();
+}
+
+// Forgets the send in progress, if any: its outbox callback is then stale.
+static void prv_send_abandon(void) {
+  s_send = SendNotSent;
+  s_send_token++;
+}
+
+// The outbox is free again after an abandoned send. If the current one was
+// waiting for it, it goes now.
+static void prv_stale_outbox_done(void) {
+  if (s_send == SendInFlight) {
+    prv_send_now();
+  }
+}
+
+// The companion app Acks once the transcript is durably queued on the phone;
+// a short vibe confirms it without looking.
+static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
+  if (s_exiting) {
+    return;
+  }
+  if (s_outbox_token != s_send_token) {
+    prv_stale_outbox_done();
+    return;
+  }
+  vibes_short_pulse();
+  if (s_send_exit_on_ack) {
+    prv_exit(false);
+    return;
+  }
+  s_send = SendSent;
+  prv_render();
+}
+
+// The phone's silence is the one failure worth another go: the message or
+// its Ack can be lost, or the phone's handlers can take longer than the
+// firmware's 10 s to come up. The companion ignores a repeat.
+static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  if (s_exiting) {
+    return;
+  }
+  if (s_outbox_token != s_send_token) {
+    prv_stale_outbox_done();
+    return;
+  }
+  if (reason == APP_MSG_SEND_TIMEOUT && s_send_attempts < SEND_ATTEMPTS) {
+    prv_send_now();
+    return;
+  }
+  prv_send_failed(prv_app_message_text(reason));
 }
 
 // --- Review screen -----------------------------------------------------------
@@ -336,7 +445,7 @@ static void prv_footer_update(Layer *layer, GContext *ctx) {
     graphics_draw_text(ctx, footer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD), strip,
                        GTextOverflowModeFill, GTextAlignmentCenter, NULL);
   }
-  if (s_screen != ScreenCountdown) {
+  if (!prv_counting()) {
     return;
   }
   // Colours as on the firmware's dictation screen: black on dark grey, or an
@@ -361,15 +470,21 @@ static void prv_footer_update(Layer *layer, GContext *ctx) {
 static void prv_bar_tick(void *context) {
   if (prv_bar_elapsed_ms() >= s_bar_total_ms) {
     s_bar_timer = NULL;
-    prv_send_transcript(s_sent_screen_enabled);
+    prv_send(false);
     return;
   }
   layer_mark_dirty(s_footer_layer);
   s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
 }
 
-// Lays out the transcript in the scrollable area; the caller then picks the
-// screen.
+static void prv_countdown_start(uint32_t total_ms) {
+  s_bar_start_ms = prv_now_ms();
+  s_bar_total_ms = total_ms;
+  s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
+  prv_render();
+}
+
+// Lays out the transcript in the scrollable area and shows the review.
 static void prv_show_transcript(void) {
   text_layer_set_text(s_transcript_layer, s_transcript);
 
@@ -388,34 +503,33 @@ static void prv_show_transcript(void) {
   text_layer_set_size(s_transcript_layer, content);
   scroll_layer_set_content_size(s_scroll_layer, GSize(content.w, scroll_h));
   scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
-}
-
-static void prv_show_review(void) {
-  prv_show_transcript();
-  if (s_review_delay_s == REVIEW_DELAY_MANUAL) {
-    prv_set_screen(ScreenReview);
-  } else {
-    s_bar_start_ms = prv_now_ms();
-    s_bar_total_ms = s_review_delay_s * 1000;
-    prv_set_screen(ScreenCountdown);
-    s_bar_timer = app_timer_register(BAR_TICK_MS, prv_bar_tick, NULL);
-  }
+  prv_set_screen(ScreenReview);
 }
 
 static void prv_start_dictation(void);
+
+// Returns from a send failure to the review, to try again or record again.
+static void prv_leave_send_failed(void) {
+  prv_set_screen(ScreenReview);
+}
 
 // Up and Down scroll like the firmware's scrolling screens; during the
 // countdown they only stop it.
 static void prv_scroll_click(ClickRecognizerRef recognizer, ClickHandler scroll) {
   switch (s_screen) {
-    case ScreenStatus:
+    case ScreenReview:
+      if (prv_counting()) {
+        prv_pause_review();
+      } else {
+        prv_restart_idle();
+        scroll(recognizer, s_scroll_layer);
+      }
       return;
-    case ScreenCountdown:
-      prv_pause_review();
+    case ScreenSendFailed:
+      prv_leave_send_failed();
       return;
     default:
-      prv_restart_idle();
-      scroll(recognizer, s_scroll_layer);
+      return;
   }
 }
 
@@ -428,16 +542,21 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 // Select pauses a running countdown like Up and Down; on a paused review it
-// sends. On the sent and no-speech screens it just closes the app.
+// sends. Once sent, and on the no-speech screen, it just closes the app.
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
   switch (s_screen) {
-    case ScreenCountdown:
-      prv_pause_review();
-      break;
     case ScreenReview:
-      prv_send_transcript(false);
+      if (prv_counting()) {
+        prv_pause_review();
+      } else if (s_send == SendNotSent) {
+        prv_send(true);
+      } else if (s_send == SendSent) {
+        prv_exit(false);
+      }
       break;
-    case ScreenSent:
+    case ScreenSendFailed:
+      prv_leave_send_failed();
+      break;
     case ScreenNoSpeech:
       prv_exit(false);
       break;
@@ -446,15 +565,16 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
   }
 }
 
-// Back records again wherever there is a transcript to replace, and
-// otherwise exits, including while a send is still in flight.
+// Back records again wherever there is a transcript to replace, even while
+// it is still being sent, and otherwise exits.
 static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
   switch (s_screen) {
-    case ScreenCountdown:
     case ScreenReview:
-    case ScreenSent:
     case ScreenNoSpeech:
       prv_start_dictation();
+      break;
+    case ScreenSendFailed:
+      prv_leave_send_failed();
       break;
     default:
       prv_exit(true);
@@ -504,11 +624,10 @@ static bool prv_is_blank(const char *text) {
   return true;
 }
 
-// Nothing to send is not a failure: no vibe, and the review screen without a
-// footer, so Back records again and Select closes.
+// Nothing to send is not a failure: no vibe, and a placeholder, so Back
+// records again and Select closes.
 static void prv_no_speech(void) {
-  text_layer_set_text(s_status_layer, "[No speech detected]");
-  prv_set_screen(ScreenNoSpeech);
+  prv_show_status(ScreenNoSpeech, "[No speech detected]");
 }
 
 static void prv_dictation_callback(DictationSession *session, DictationSessionStatus status,
@@ -523,15 +642,14 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     }
     strncpy(s_transcript, transcription, TRANSCRIPT_MAX - 1);
     s_transcript[TRANSCRIPT_MAX - 1] = '\0';
+    s_recorded_at = (uint32_t) time(NULL);
+    // The one place the review delay is read: it decides how the review
+    // starts, and nothing after this differs between the settings.
+    prv_show_transcript();
     if (s_review_delay_s == 0) {
-      if (s_sent_screen_enabled) {
-        prv_show_transcript();
-        prv_send_transcript(true);
-      } else {
-        prv_send_transcript(false);
-      }
-    } else {
-      prv_show_review();
+      prv_send(false);
+    } else if (s_review_delay_s != REVIEW_DELAY_MANUAL) {
+      prv_countdown_start(s_review_delay_s * 1000);
     }
     return;
   }
@@ -544,43 +662,22 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
     prv_exit(false);
     return;
   }
-  prv_fail(prv_dictation_failure_text(status));
+  prv_fail(ScreenDictationFailed, prv_dictation_failure_text(status));
 }
 
 // Shows our placeholder, then asks the firmware to push its voice screen on
 // top. If that refuses (Bluetooth down at this instant), no callback ever
 // comes, so the refusal is reported here rather than left as "Loading...".
 static void prv_start_dictation(void) {
-  prv_show_status("Loading...");
+  prv_send_abandon();
+  prv_countdown_cancel();
+  prv_show_status(ScreenLoading, "Loading...");
   DictationSessionStatus status = dictation_session_start(s_dictation);
   if (status != DictationSessionStatusSuccess) {
     char text[STATUS_MAX];
     snprintf(text, sizeof(text), "Can't start. %s", prv_dictation_failure_text(status));
-    prv_fail(text);
+    prv_fail(ScreenDictationFailed, text);
   }
-}
-
-// The companion app Acks once the transcript is durably queued on the phone;
-// a short vibe confirms it without looking. A send the user chose with Select
-// needs no more confirmation, so the app exits at once. An auto-send keeps the
-// transcript up as the sent screen, so it can be checked and redone.
-static void prv_outbox_sent(DictionaryIterator *iter, void *context) {
-  if (s_exiting) {
-    return;
-  }
-  vibes_short_pulse();
-  if (s_screen == ScreenSending) {
-    prv_set_screen(ScreenSent);
-    return;
-  }
-  prv_exit(false);
-}
-
-static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
-  if (s_exiting) {
-    return;
-  }
-  prv_fail(prv_app_message_text(reason));
 }
 
 // --- Settings ----------------------------------------------------------------
@@ -711,7 +808,7 @@ static void prv_window_load(Window *window) {
 
 static void prv_window_unload(Window *window) {
   prv_cancel_idle();
-  prv_stop_bar_timer();
+  prv_countdown_cancel();
   action_bar_layer_destroy(s_action_bar);
   gbitmap_destroy(s_icon_check);
   gbitmap_destroy(s_icon_up);
@@ -740,9 +837,10 @@ static void prv_start(void) {
   } else if (!connection_service_peek_pebble_app_connection()) {
     // The firmware refuses to create a session unless a phone app that
     // supports app dictation is connected; this is the common reason.
-    prv_fail("Phone not connected");
+    prv_fail(ScreenDictationFailed, "Phone not connected");
   } else {
-    prv_fail("Dictation unavailable: phone app lacks voice support, or out of memory");
+    prv_fail(ScreenDictationFailed,
+             "Dictation unavailable: phone app lacks voice support, or out of memory");
   }
 }
 
