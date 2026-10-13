@@ -1,5 +1,5 @@
 {
-  "name": "voicehook",
+  "name": "telegramagent",
   "author": "deltaloop",
   "version": "1.0.0",
   "keywords": [
@@ -10,7 +10,7 @@
     "@rebble/clay": "^1.0.8"
   },
   "pebble": {
-    "displayName": "Voice Hook",
+    "displayName": "Telegram Agent",
     "uuid": "c0b48501-a0da-4fbb-9013-a4ea68dc6165",
     "sdkVersion": "3",
     "targetPlatforms": [
@@ -42,6 +42,7 @@
     },
     "resources": {
       "media": [
+        { "type": "bitmap", "name": "IMAGE_MENU_ICON", "file": "images/menu_icon.png", "menuIcon": true },
         { "type": "bitmap", "name": "ICON_CHECK", "file": "images/icon_check.png" },
         { "type": "bitmap", "name": "ICON_UP", "file": "images/icon_up.png" },
         { "type": "bitmap", "name": "ICON_DOWN", "file": "images/icon_down.png" }

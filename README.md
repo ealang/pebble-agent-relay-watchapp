@@ -1,4 +1,4 @@
-# Voice Hook
+# Telegram Agent
 
 A Pebble watchapp that dictates a voice message and hands the transcript to
 its Android companion app. Open the app, speak, done.
@@ -93,9 +93,12 @@ The phone app's settings page has two options:
 The Save button only appears once a setting differs from what was saved,
 so an unsaved change is visible at a glance.
 
-The settings are persisted on the watch, so they add no startup delay. A
-save reaches the watch at once if the app is open and applies from the
-next recording; a countdown already running keeps its length.
+A save is pushed to the watch, which persists it, so the settings add no
+startup delay. Opening the settings page launches the app, and the save
+applies from the next recording; a countdown already running keeps its
+length. If the app is not running when you save (for instance after
+backing out of its `Press to continue` screen), the watch does not get the
+new values; open the settings page and save again.
 
 Text follows the watch's Text Size setting (Settings → Notifications), so
 the review matches the system UI.

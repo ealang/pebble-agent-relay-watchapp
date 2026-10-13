@@ -697,10 +697,9 @@ static void prv_load_settings(void) {
   }
 }
 
-// The phone pushes the settings at every launch and whenever they are saved.
-// A value is written only when it changed, or was never stored (so a later
-// change of default cannot override the user's choice), sparing the flash a
-// write per launch.
+// The phone pushes the settings whenever they are saved. A value is written
+// only when it changed, or was never stored (so a later change of default
+// cannot override the user's choice).
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *sent_screen = dict_find(iter, MESSAGE_KEY_SENT_SCREEN);
   if (sent_screen) {
