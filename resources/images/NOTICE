@@ -2,3 +2,8 @@ icon_check.png, icon_up.png and icon_down.png are the action bar icons from
 PebbleOS (https://github.com/coredevices/PebbleOS), resources/*/base/images/
 action_bar_icon_{check,up,down}.png, licensed under the Apache License 2.0.
 They have been recoloured from white to black for a transparent action bar.
+
+menu_icon.png is the launcher icon: the 25x25 Telegram paper plane,
+reduced to black, white and transparent. The firmware's launcher tints
+every app icon by luminance (black on colour watches, inverted on the
+highlighted row of black-and-white watches), so colour would be lost.
