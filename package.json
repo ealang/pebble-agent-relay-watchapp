@@ -10,7 +10,7 @@
     "@rebble/clay": "^1.0.8"
   },
   "pebble": {
-    "displayName": "Telegram Agent",
+    "displayName": "Operator",
     "uuid": "c0b48501-a0da-4fbb-9013-a4ea68dc6165",
     "sdkVersion": "3",
     "targetPlatforms": [
