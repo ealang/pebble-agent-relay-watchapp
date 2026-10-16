@@ -1,5 +1,5 @@
 {
-  "name": "telegramagent",
+  "name": "operator",
   "author": "deltaloop",
   "version": "1.0.0",
   "keywords": [
@@ -34,7 +34,7 @@
       "android": {
         "apps": [
           {
-            "package": "io.github.ealang.pebbletelegramagent"
+            "package": "io.github.ealang.operator"
           }
         ],
         "required": true

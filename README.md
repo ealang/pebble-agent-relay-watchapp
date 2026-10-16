@@ -1,4 +1,4 @@
-# Telegram Agent
+# Operator
 
 A Pebble watchapp that dictates a voice message and hands the transcript to
 its Android companion app. Open the app, speak, done.
@@ -16,8 +16,8 @@ its Android companion app. Open the app, speak, done.
    `RECORDED_AT` 10003) so a companion built against them keeps working
    if keys are later added or reordered.
 4. The Pebble phone app routes the message to the declared companion app,
-   [pebble-telegram-webhook](https://github.com/ealang/pebble-telegram-webhook)
-   (`io.github.ealang.pebbletelegramagent`), which queues it durably and Acks.
+   Pebble Operator (`io.github.ealang.operator`), which queues it durably
+   and Acks.
    If the phone does not answer within the firmware's ten seconds, the
    watch sends the same message once more.
 5. On the Ack the watch vibrates once. If you pressed Select to send, the
