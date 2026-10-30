@@ -30,13 +30,12 @@ Every failure vibrates twice and stays on screen until you press a button,
 with a message that names the step that failed so reports can be matched to
 a cause:
 
-- Session creation: `Phone not connected`, or `Dictation unavailable` when
-  the phone app lacks voice support or the watch is out of memory.
-- Starting or running dictation: `Can't start. ...`, `Dictation: phone
-  voice session failed`, `Dictation: no phone or internet`, `Dictation:
-  recognizer failed`, and so on, one per firmware status.
-- Sending: `Phone not connected`, `Phone rejected the message` (the
-  companion Nacked it), or `No reply from phone` after two attempts. Any
+- Session creation: `Phone not connected`, or `Dictation unavailable`.
+- Starting or running dictation: `No connection`, `Dictation error`,
+  `Speech not recognized`, `Voice disabled in phone app`, and so on, one
+  per firmware status.
+- Sending: `Not sent: phone not connected`, `Phone rejected the message`
+  (the companion Nacked it), or `No reply from phone` after two attempts. Any
   button returns to the review screen, where Select sends again and Back
   records again. A repeat carries the same `RECORDED_AT`, so the companion
   can drop it if the first attempt did arrive.

@@ -307,7 +307,7 @@ static const char *prv_app_message_text(AppMessageResult result) {
     case APP_MSG_SEND_REJECTED:
       return "Phone rejected the message";
     case APP_MSG_NOT_CONNECTED:
-      return "Phone not connected";
+      return "Not sent: phone not connected";
     case APP_MSG_APP_NOT_RUNNING:
       return "Phone app not running";
     case APP_MSG_BUFFER_OVERFLOW:
@@ -337,7 +337,7 @@ static void prv_send_now(void) {
   }
   if (dict_write_cstring(out, MESSAGE_KEY_TRANSCRIPT, s_transcript) != DICT_OK ||
       dict_write_uint32(out, MESSAGE_KEY_RECORDED_AT, s_recorded_at) != DICT_OK) {
-    prv_send_failed("Transcript too large for outbox");
+    prv_send_failed("Transcript too large");
     return;
   }
   result = app_message_outbox_send();
@@ -593,17 +593,17 @@ static const char *prv_dictation_failure_text(DictationSessionStatus status) {
   static char buf[32];
   switch (status) {
     case DictationSessionStatusFailureTranscriptionRejectedWithError:
-      return "Dictation: exited after error";
+      return "Exited after error";
     case DictationSessionStatusFailureSystemAborted:
-      return "Dictation: phone voice session failed";
+      return "Dictation error";
     case DictationSessionStatusFailureConnectivityError:
-      return "Dictation: no phone or internet";
+      return "No connection";
     case DictationSessionStatusFailureDisabled:
-      return "Dictation disabled for this account";
+      return "Voice disabled in phone app";
     case DictationSessionStatusFailureInternalError:
-      return "Dictation: internal error";
+      return "Dictation internal error";
     case DictationSessionStatusFailureRecognizerError:
-      return "Dictation: recognizer failed";
+      return "Speech not recognized";
     default:
       snprintf(buf, sizeof(buf), "Dictation status %d", (int) status);
       return buf;
@@ -669,9 +669,7 @@ static void prv_start_dictation(void) {
   prv_show_status(ScreenLoading, "Loading...");
   DictationSessionStatus status = dictation_session_start(s_dictation);
   if (status != DictationSessionStatusSuccess) {
-    char text[STATUS_MAX];
-    snprintf(text, sizeof(text), "Can't start. %s", prv_dictation_failure_text(status));
-    prv_fail(ScreenDictationFailed, text);
+    prv_fail(ScreenDictationFailed, prv_dictation_failure_text(status));
   }
 }
 
@@ -833,8 +831,9 @@ static void prv_start(void) {
     // supports app dictation is connected; this is the common reason.
     prv_fail(ScreenDictationFailed, "Phone not connected");
   } else {
-    prv_fail(ScreenDictationFailed,
-             "Dictation unavailable: phone app lacks voice support, or out of memory");
+    // The SDK lists several causes (no voice support in the phone app, no
+    // voice on this platform, internal error) and gives no way to tell.
+    prv_fail(ScreenDictationFailed, "Dictation unavailable");
   }
 }
 
