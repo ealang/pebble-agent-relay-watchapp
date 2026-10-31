@@ -3,11 +3,11 @@ PebbleOS (https://github.com/coredevices/PebbleOS), resources/*/base/images/
 action_bar_icon_{check,up,down}.png, licensed under the Apache License 2.0.
 They have been recoloured from white to black for a transparent action bar.
 
-menu_icon~color.png and menu_icon~bw.png are the launcher icon: the
-25x25 keypad key with a zero (dial 0 for the operator), a 2px black wall
-round a white face. The SDK picks the ~color file on colour watches and
-the ~bw file on black-and-white ones. The firmware's launcher tints every
-app icon by luminance (black on colour watches, inverted on the
-highlighted row of black-and-white watches), keeping only black, dark
-grey, light grey and white, so the colour version uses those greys to
-smooth the corners and the bw version stays crisp.
+menu_icon~color.png and menu_icon~bw.png are the launcher icon: a 25x25
+Telegram paper plane with a black border, drawn by the companion app's
+art/render-icons.py from the same glyph as its launcher icon. The SDK
+picks the ~color file on colour watches and the ~bw file on black-and-white
+ones. The firmware's launcher tints every app icon by luminance (black on
+colour watches, inverted on the highlighted row of black-and-white
+watches), keeping only black, dark grey, light grey and white, so the
+colour version uses a light grey fill rather than Telegram blue.
