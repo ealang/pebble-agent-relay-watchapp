@@ -1,7 +1,11 @@
-# Operator
+# Agent Relay
 
 A Pebble watchapp that dictates a voice message and hands the transcript to
 its Android companion app. Open the app, speak, done.
+
+Agent Relay uses the Telegram API and is part of the Telegram ecosystem. It
+is not affiliated with or endorsed by Telegram. Pebble is a trademark of
+Core Devices LLC.
 
 ## What it does
 
@@ -16,7 +20,7 @@ its Android companion app. Open the app, speak, done.
    `RECORDED_AT` 10003) so a companion built against them keeps working
    if keys are later added or reordered.
 4. The Pebble phone app routes the message to the declared companion app,
-   Pebble Operator (`io.github.ealang.operator`), which queues it durably
+   Agent Relay (`io.github.ealang.agentrelay`), which queues it durably
    and Acks.
    If the phone does not answer within the firmware's ten seconds, the
    watch sends the same message once more.

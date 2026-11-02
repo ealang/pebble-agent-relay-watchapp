@@ -1,5 +1,5 @@
 {
-  "name": "operator",
+  "name": "agentrelay",
   "author": "deltaloop",
   "version": "1.0.0",
   "keywords": [
@@ -10,7 +10,7 @@
     "@rebble/clay": "^1.0.8"
   },
   "pebble": {
-    "displayName": "Operator",
+    "displayName": "Agent Relay",
     "uuid": "c0b48501-a0da-4fbb-9013-a4ea68dc6165",
     "sdkVersion": "3",
     "targetPlatforms": [
@@ -34,7 +34,7 @@
       "android": {
         "apps": [
           {
-            "package": "io.github.ealang.operator"
+            "package": "io.github.ealang.agentrelay"
           }
         ],
         "required": true
