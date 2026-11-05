@@ -3,6 +3,8 @@
 A streamlined Pebble watchapp for sending a dictated message to a single AI
 agent over Telegram. Inspired by the [Pebble Index](https://repebble.com/index).
 
+Install the [pebble app](https://apps.repebble.com/69bcd8669ec641129e098dd3).
+
 Requires the companion app:
 [Agent Relay for Android](https://github.com/ealang/pebble-agent-relay-android).
 
